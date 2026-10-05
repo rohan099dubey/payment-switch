@@ -1,0 +1,16 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  # The spec's contracts (section 9) are verbatim and its file layout (section 3) is
+  # fixed; both conflict with these four STANDARD rules. See ADR-011.
+  except:
+    - PACKAGE_DIRECTORY_MATCH
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_RESPONSE_UNIQUE
+breaking:
+  use:
+    - FILE

@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package switchpay.orchestrator.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service TransferService {
+  rpc CreateTransfer(CreateTransferRequest) returns (CreateTransferResponse);
+  rpc GetTransfer(GetTransferRequest) returns (Transfer);
+}
+
+enum TransferState {
+  TRANSFER_STATE_UNSPECIFIED = 0;
+  TRANSFER_STATE_INITIATED = 1;
+  TRANSFER_STATE_DEBIT_SENT = 2;
+  TRANSFER_STATE_DEBITED = 3;
+  TRANSFER_STATE_CREDIT_SENT = 4;
+  TRANSFER_STATE_CREDITED = 5;
+  TRANSFER_STATE_SUCCESS = 6;
+  TRANSFER_STATE_FAILED = 7;
+  TRANSFER_STATE_REVERSING = 8;
+  TRANSFER_STATE_REVERSED = 9;
+  TRANSFER_STATE_NEEDS_MANUAL_REVIEW = 10;
+}
+
+message Party {
+  string bank_id = 1;
+  string account_id = 2;
+}
+
+message CreateTransferRequest {
+  string client_id = 1;        // set by the Gateway from the JWT, never from the body
+  string idempotency_key = 2;
+  Party payer = 3;
+  Party payee = 4;
+  int64 amount = 5;
+  string currency = 6;
+  string note = 7;
+}
+
+message CreateTransferResponse {
+  Transfer transfer = 1;
+  bool replayed = 2;
+}
+
+message GetTransferRequest {
+  string transfer_id = 1;
+  string client_id = 2;        // a client can only read its own transfers; otherwise NOT_FOUND
+}
+
+message Transfer {
+  string transfer_id = 1;
+  TransferState state = 2;
+  Party payer = 3;
+  Party payee = 4;
+  int64 amount = 5;
+  string currency = 6;
+  string note = 7;
+  string failure_code = 8;
+  string failure_message = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}

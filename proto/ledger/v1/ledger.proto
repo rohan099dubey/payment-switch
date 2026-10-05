@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package switchpay.ledger.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+service LedgerService {
+  rpc PostJournal(PostJournalRequest) returns (PostJournalResponse);
+  rpc GetJournal(GetJournalRequest) returns (Journal);
+  rpc ListJournals(ListJournalsRequest) returns (ListJournalsResponse);
+  rpc GetBalance(GetBalanceRequest) returns (AccountBalance);
+  rpc GetTrialBalance(google.protobuf.Empty) returns (TrialBalanceResponse);
+}
+
+enum EntryDirection {
+  ENTRY_DIRECTION_UNSPECIFIED = 0;
+  ENTRY_DIRECTION_DEBIT = 1;
+  ENTRY_DIRECTION_CREDIT = 2;
+}
+
+message EntryLine {
+  string account_code = 1;
+  EntryDirection direction = 2;
+  int64 amount = 3; // paise, greater than 0
+}
+
+message PostJournalRequest {
+  string idempotency_key = 1;
+  string reference_id = 2;
+  string kind = 3;
+  string description = 4;
+  string currency = 5;
+  repeated EntryLine lines = 6;
+}
+
+message PostJournalResponse {
+  Journal journal = 1;
+  bool replayed = 2;
+}
+
+message Journal {
+  string journal_id = 1;
+  string idempotency_key = 2;
+  string reference_id = 3;
+  string kind = 4;
+  string description = 5;
+  string currency = 6;
+  repeated EntryLine lines = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message GetJournalRequest {
+  string journal_id = 1;
+}
+
+message ListJournalsRequest {
+  string reference_id = 1;
+}
+
+message ListJournalsResponse {
+  repeated Journal journals = 1;
+}
+
+message GetBalanceRequest {
+  string account_code = 1;
+}
+
+message AccountBalance {
+  string account_code = 1;
+  string account_type = 2;  // ASSET or LIABILITY
+  int64 debit_total = 3;
+  int64 credit_total = 4;
+  int64 balance = 5;        // normal-side balance, see section 7
+  string currency = 6;
+}
+
+message TrialBalanceResponse {
+  repeated AccountBalance accounts = 1;
+  int64 total_debits = 2;
+  int64 total_credits = 3;
+  bool balanced = 4;
+}

@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package switchpay.bank.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+service BankService {
+  rpc Debit(MoneyOperationRequest) returns (MoneyOperationResponse);
+  rpc Credit(MoneyOperationRequest) returns (MoneyOperationResponse);
+  rpc ReverseDebit(ReverseDebitRequest) returns (MoneyOperationResponse);
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  rpc GetOperation(GetOperationRequest) returns (GetOperationResponse);
+
+  // Admin and test support. Exempt from chaos injection.
+  rpc CreateAccount(CreateAccountRequest) returns (Account);
+  rpc GetAccount(GetAccountRequest) returns (Account);
+  rpc SetChaosConfig(ChaosConfig) returns (ChaosConfig);
+  rpc GetChaosConfig(google.protobuf.Empty) returns (ChaosConfig);
+}
+
+enum OperationType {
+  OPERATION_TYPE_UNSPECIFIED = 0;
+  OPERATION_TYPE_DEBIT = 1;
+  OPERATION_TYPE_CREDIT = 2;
+  OPERATION_TYPE_REVERSE_DEBIT = 3;
+}
+
+enum OperationStatus {
+  OPERATION_STATUS_UNSPECIFIED = 0;
+  OPERATION_STATUS_APPLIED = 1;
+  OPERATION_STATUS_VOIDED = 2;
+  OPERATION_STATUS_NOT_FOUND = 3;
+}
+
+message MoneyOperationRequest {
+  string reference_id = 1; // transfer id (UUID); the idempotency key of the operation
+  string account_id = 2;
+  int64 amount = 3;        // paise, greater than 0
+  string currency = 4;     // INR
+}
+
+message ReverseDebitRequest {
+  string reference_id = 1;
+}
+
+message MoneyOperationResponse {
+  string bank_txn_id = 1;
+  OperationStatus status = 2;
+  int64 balance_after = 3;
+  google.protobuf.Timestamp applied_at = 4;
+}
+
+message ResolveRequest {
+  string reference_id = 1;
+  OperationType operation = 2; // DEBIT or CREDIT only
+}
+
+message ResolveResponse {
+  OperationStatus status = 1; // APPLIED or VOIDED, never NOT_FOUND
+}
+
+message GetOperationRequest {
+  string reference_id = 1;
+  OperationType operation = 2;
+}
+
+message GetOperationResponse {
+  OperationStatus status = 1;
+  string account_id = 2;
+  int64 amount = 3;
+}
+
+message Account {
+  string account_id = 1;
+  string holder_name = 2;
+  int64 balance = 3;
+  string currency = 4;
+  string status = 5; // ACTIVE or BLOCKED
+}
+
+message CreateAccountRequest {
+  string account_id = 1;
+  string holder_name = 2;
+  int64 opening_balance = 3;
+  string currency = 4;
+  string status = 5; // defaults to ACTIVE when empty
+}
+
+message GetAccountRequest {
+  string account_id = 1;
+}
+
+message ChaosConfig {
+  bool down = 1;
+  uint32 latency_min_ms = 2;
+  uint32 latency_max_ms = 3;
+  double reject_rate = 4;
+  double late_apply_rate = 5;
+  double lost_response_rate = 6;
+  uint32 slow_ms = 7;
+  uint32 seed = 8;
+}
