@@ -19,6 +19,8 @@ export const LedgerErrorCode = {
   IDEMPOTENCY_KEY_REUSED: 'IDEMPOTENCY_KEY_REUSED',
   ACCOUNT_NOT_FOUND: 'ACCOUNT_NOT_FOUND',
   JOURNAL_NOT_FOUND: 'JOURNAL_NOT_FOUND',
+  /** ADR-017: the database's own triggers or CHECKs refused a journal the app accepted. */
+  LEDGER_INVARIANT_VIOLATION: 'LEDGER_INVARIANT_VIOLATION',
 } as const;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -52,6 +54,14 @@ export function createLedgerHandlers({ pool, metrics, instrument }: HandlerDeps)
             Status.NOT_FOUND,
             LedgerErrorCode.ACCOUNT_NOT_FOUND,
             `unknown account code(s): ${outcome.codes.join(', ')}`,
+          );
+        case 'rejected_by_database':
+          // FAILED_PRECONDITION, not INTERNAL: the Orchestrator classifies it as BUG and
+          // stops, instead of retrying a journal the database will never accept (ADR-017).
+          throw makeGrpcError(
+            Status.FAILED_PRECONDITION,
+            LedgerErrorCode.LEDGER_INVARIANT_VIOLATION,
+            `journal rejected by a ledger database invariant (SQLSTATE ${outcome.sqlstate}): ${outcome.message}`,
           );
         case 'created':
         case 'replayed': {

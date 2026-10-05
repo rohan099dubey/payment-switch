@@ -387,3 +387,109 @@ Total: 6 failed, 27 passed. The files were restored hash-identical.
 **Open questions**
 - `ADR-010` (inline saga budget): M3.
 - Ledger trigger error mapping: M3.
+
+---
+
+## 2026-10-06 — Session 2 — M3 Orchestrator core
+
+**Status at end:** M3 `DONE`, all boxes ticked. Both open questions resolved.
+
+**Done**
+- Resolved the two open questions *before* writing M3 code (owner stated no preference,
+  so the stricter option both times):
+  - **ADR-010:** keep every spec number and accept `202` as normal, but make the inline
+    budget a **hard bound**. Section 6 checks the deadline only at the top of the loop,
+    so a step starting at 7.9 s could run for 12 s more and answer after the Gateway's
+    10 s deadline. Now every attempt's deadline is `min(per-call timeout, budget left)`,
+    no attempt starts with less than 100 ms left, and retry sleeps are capped at the
+    deadline. M5's `lost_response_rate = 1` box is explicitly deferred to the M6 session.
+  - **ADR-017:** the Ledger maps its own `P0001` (trigger `RAISE`) and `23514` (CHECK)
+    to `FAILED_PRECONDITION` / `LEDGER_INVARIANT_VIOLATION`, which `classify` already
+    reads as `BUG`. Everything else stays `INTERNAL`, so it is still retried.
+- `services/orchestrator` (`@switch/orchestrator`): `config`, `metrics`, `main`,
+  `grpc/{server,handlers}`, `domain/{states,transitions,saga,policy,failureCodes,validate,transfer}`,
+  `repo/{transfersRepo,eventsRepo}`, `clients/{bankClients,ledgerClient}`, and migration
+  `0001_init.sql` (diffed against §10: verbatim). Compose service `orchestrator` (waits for
+  its Postgres, the Ledger and both banks to be healthy).
+- ADR-018 records the details the spec leaves open (CAS also matches `state`, unrecognised
+  bank errors are bugs, event reason vocabulary, yield semantics, extra startup checks).
+- Unit tests: 239 in `services/orchestrator/test` (transition map with all 100 pairs,
+  `transition()`, saga with in-memory fakes, validation and hash, journal templates, config)
+  plus 10 in `services/ledger/test/repo/journalRepo.test.ts`.
+- Integration tests: `tests/integration/orchestrator.test.ts` (25, through gRPC with the real
+  banks and Ledger) and `orchestratorRepo.test.ts` (16, the repo SQL against real Postgres).
+  Also `tests/helpers/transfers.ts` (`awaitTerminal`, the ADR-010 polling helper).
+
+**Verification**
+```text
+npm run lint          -> eslint clean; "All matched files use Prettier code style!"
+npm run typecheck     -> tsc -b, exit 0
+npm test              -> Test Files 20 passed (20) / Tests 391 passed (391)
+npm run stack:up      -> 8/8 healthy (4 infra + ledger + bank-a + bank-b + orchestrator)
+orchestrator start    -> "migrations applied" ["0001_init.sql"], "orchestrator started"
+npm run test:integration -> Test Files 4 passed (4) / Tests 100 passed (100), ~13 s
+docker compose stop orchestrator -> "orchestrator shutting down" / "orchestrator stopped", exit=0
+```
+
+**Mutation check.** Every mutant was caught, and each one was isolated so that one could
+not mask another.
+- Built `dist/` copied to a scratch dir, run on 50151/9201 against the real DB, banks and
+  Ledger. The suite was pointed at it through `ORCHESTRATOR_GRPC_ADDR` / `ORCHESTRATOR_HTTP_URL`:
+  (A) CAS writes no event, (C) `SAME_ACCOUNT` check dropped, (D) `GetTransfer` not scoped
+  to the client, (E) debit-leg credits `payable` instead of `transit`. Result: 7 failed,
+  18 passed. **(B) "reversal journal never posted" was masked by E in that run**, because
+  the REVERSED test failed on E's delta first. Re-run alone, B failed exactly that test.
+- Source mutants with the unit/repo suites. U1 "unknown outcome treated as definite
+  failure" (the forbidden timeout-is-failure bug), run alone: 5 failed. U2 "deadline not
+  clipped to the budget", alone: 2 failed. CAS on `id + version` only: 4 repo tests
+  failed. `SUCCESS -> FAILED` allowed: 5 failed. All files restored, hash-verified.
+- ADR-017 end to end: a Ledger copy with the balance check removed from `validate.ts`
+  (50152/9202). An unbalanced journal returned status 9 (`FAILED_PRECONDITION`) /
+  `LEDGER_INVARIANT_VIOLATION` / "SQLSTATE P0001 … unbalanced: debits 100 credits 99", and
+  0 journals were committed. The ledger suite against it: exactly 1 failed ("rejects in
+  application code").
+
+**Decisions**
+- **`advance` implements the whole section 6 loop now, including inline retries and
+  `yield`.** The alternative was a deliberately degraded M3 saga with no unknown-outcome
+  handling, which would have to be rewritten in M5, and a saga that cannot represent
+  "unknown" is the bug the design exists to prevent. The M5 boxes ("inline retries",
+  "yield()") stay **unticked**: the code exists, but M5's acceptance tests must observe it.
+- **Ports, not clients, in the domain.** `SagaEngine` depends on `BankPort`,
+  `LedgerPort`, `SagaStore`, `Clock` and `SagaObserver` interfaces. `clients/` and
+  `repo/` implement them. The unit tests use fakes that apply the **same CAS guard as the
+  SQL**, so the saga is tested against the real contract, not a looser one.
+- **Hang scripts advance a fake clock.** A fake call that "hangs" advances time by the
+  call's own timeout and then throws `DEADLINE_EXCEEDED`. The budget arithmetic is
+  therefore exercised for real, with no wall-clock sleeps (239 tests in about 1 s).
+- **Repo-level SQL tests import `services/orchestrator/src`.** `tests/tsconfig.json` now
+  references the orchestrator project. `claimDue` is tested inside `BEGIN … ROLLBACK` with
+  `next_attempt_at = '-infinity'`, so it never leases another run's rows, and our rows
+  always sort first.
+- **Business failures carry evidence.** Event `detail` holds `error_code`, `bank_id`,
+  `bank_txn_id` and `journal_id`, and the integration tests assert on them.
+
+**Gotchas**
+- **`transfer_id` appeared twice in log lines.** pino does not dedupe child bindings: the
+  handler bound it, and `transition()` logged it again. Fix: the saga gets the unbound
+  request logger and adds `transfer_id` itself. Watch for this in M6, where the recovery
+  worker builds its own loggers.
+- **Combined mutants mask each other.** The first mutation run put five bugs in one copy.
+  The REVERSED test failed on the ledger-delta assertion (mutant E) before reaching the
+  journal assertion that catches B. Run mutants one at a time, or at least check that
+  every mutant has a *distinct* failing assertion.
+- **Bash heredocs truncate again** (as Session 0 warned). A three-file heredoc silently
+  cut the third file to 2 lines. Use the Write tool for anything longer than ~80 lines,
+  and check `wc -l` after generated files.
+- **A background `node dist/main.js` stopped with `Stop-Process` reports exit 127.** That
+  is expected, not a crash.
+- `cd` inside a Bash call changes the session's working directory for later calls. Use
+  absolute paths or a subshell.
+
+**Next action**
+- **M4 Gateway.** Read `ARCHITECTURE.md` §5 and §14. Mirror the service layout. A
+  `CreateTransfer` response with a non-terminal transfer maps to `202` + `Location`
+  (ADR-010). Its `happyPath` tests should use the same `awaitTerminal` polling discipline.
+
+**Open questions**
+- None.

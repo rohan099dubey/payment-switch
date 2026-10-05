@@ -1,5 +1,5 @@
 import { withTransaction } from '@switch/common';
-import type { Pool, PoolClient } from 'pg';
+import { DatabaseError, type Pool, type PoolClient } from 'pg';
 import type { Direction, JournalLine, ValidJournal } from '../domain/validate';
 
 export interface StoredJournal {
@@ -17,7 +17,22 @@ export type PostJournalOutcome =
   | { status: 'created'; journal: StoredJournal }
   | { status: 'replayed'; journal: StoredJournal }
   | { status: 'key_reused' }
-  | { status: 'unknown_accounts'; codes: string[] };
+  | { status: 'unknown_accounts'; codes: string[] }
+  | { status: 'rejected_by_database'; sqlstate: string; message: string };
+
+/**
+ * SQLSTATEs that mean "the database's own invariants refused this journal" (ADR-017):
+ * `P0001` is `RAISE EXCEPTION` from the append-only and balance triggers, `23514` a
+ * `CHECK` constraint. Both are deterministic, so retrying the same request can never
+ * succeed. Only reachable if application validation has a bug.
+ */
+const INVARIANT_SQLSTATES: ReadonlySet<string> = new Set(['P0001', '23514']);
+
+/** The database rejection carried by `err`, or null if `err` is anything else (ADR-017). */
+export function databaseRejectionOf(err: unknown): { sqlstate: string; message: string } | null {
+  if (!(err instanceof DatabaseError) || err.code === undefined || !INVARIANT_SQLSTATES.has(err.code)) return null;
+  return { sqlstate: err.code, message: err.message };
+}
 
 export const LIST_JOURNALS_LIMIT = 50;
 
@@ -126,6 +141,8 @@ export async function postJournal(pool: Pool, journal: ValidJournal, requestHash
     });
   } catch (err) {
     if (err instanceof UnknownAccountsError) return { status: 'unknown_accounts', codes: err.codes };
+    const rejection = databaseRejectionOf(err);
+    if (rejection !== null) return { status: 'rejected_by_database', ...rejection };
     throw err;
   }
 }

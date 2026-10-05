@@ -123,6 +123,13 @@ looking — that is what makes the project safe to put on a resume.)*
 4. That race is tested for real: Debit and Resolve fire together on separate connections, each side wins sometimes, and every pair gets one consistent answer.
 5. A seeded chaos engine (mulberry32) injects outages, rejections, late applies and lost responses. The same seed gives the same failures, so chaos bugs can be reproduced.
 
+**M3 — Orchestrator core**
+1. The Orchestrator runs each transfer as a persisted state machine. It commits the intent (`DEBIT_SENT`) before it calls the bank, so a crash at any point leaves a row that says exactly what might have happened.
+2. Every state change is a compare-and-set on version, state and lease owner, plus an audit event, in one transaction. A driver that lost the transfer writes nothing. That was tested by racing three writers against one row.
+3. An error is classified before the saga reacts. A definite "no" fails or reverses the transfer, a timeout leaves the state unchanged and is retried, and a broken invariant goes to manual review. A planted bug that treated timeouts as failures failed 5 tests.
+4. The inline time budget is a hard bound (ADR-010): every call's deadline is clipped to the time left, so the Orchestrator always answers before the Gateway gives up. When the budget runs out the transfer is handed to recovery (`202`), never failed.
+5. Ledger database-trigger rejections now come back as `FAILED_PRECONDITION`, not `INTERNAL` (ADR-017). A bug the database catches goes straight to manual review instead of being retried for minutes.
+
 ---
 
 ## Using the API: idempotency rules for clients

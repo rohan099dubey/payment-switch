@@ -8,5 +8,9 @@
   },
   "include": ["**/*.ts"],
   "exclude": ["dist"],
-  "references": [{ "path": "../packages/common" }, { "path": "../packages/proto-gen" }]
+  "references": [
+    { "path": "../packages/common" },
+    { "path": "../packages/proto-gen" },
+    { "path": "../services/orchestrator" }
+  ]
 }

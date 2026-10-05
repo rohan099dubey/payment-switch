@@ -144,6 +144,50 @@ services:
       timeout: 3s
       retries: 10
 
+  orchestrator:
+    build:
+      context: .
+      args:
+        SERVICE: orchestrator
+    environment:
+      LOG_LEVEL: info
+      GRPC_PORT: '50051'
+      HTTP_PORT: '9101'
+      DATABASE_URL: postgres://orch:orch@postgres-orchestrator:5432/orchestrator_db
+      BANK_ENDPOINTS: bank_a=bank-a:50061,bank_b=bank-b:50062
+      LEDGER_ADDR: ledger:50052
+      MAX_TRANSFER_AMOUNT: '10000000'
+      BANK_CALL_TIMEOUT_MS: '2000'
+      LEDGER_CALL_TIMEOUT_MS: '2000'
+      INLINE_BANK_RETRIES: '2'
+      INLINE_LEDGER_RETRIES: '2'
+      SAGA_INLINE_BUDGET_MS: '8000'
+      ORCHESTRATOR_TIMEOUT_MS: '10000'
+      REPLAY_WAIT_MS: '2000'
+      LEASE_MS: '15000'
+      RECOVERY_POLL_MS: '1000'
+      RECOVERY_BATCH: '20'
+      RECOVERY_CONCURRENCY: '5'
+      RESOLVE_AFTER_ATTEMPTS: '3'
+      MAX_RECOVERY_ATTEMPTS: '20'
+    ports:
+      - '50051:50051'
+      - '9101:9101'
+    depends_on:
+      postgres-orchestrator:
+        condition: service_healthy
+      ledger:
+        condition: service_healthy
+      bank-a:
+        condition: service_healthy
+      bank-b:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:9101/readyz']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   orchestrator-data:
   ledger-data:
