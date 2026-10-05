@@ -12,7 +12,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 |---|---|---|---|---|---|
 | M0 | Scaffold | `DONE` | 2, 3, 9, 15, 17 | 2026-10-05 | see `git log --grep "M0"` |
 | M1 | Ledger | `DONE` | 7, 10, 14 | 2026-10-05 | see `git log --grep "M1"` |
-| M2 | Mock Bank | `NOT_STARTED` | 8, 10, 14 | — | — |
+| M2 | Mock Bank | `DONE` | 8, 10, 14 | 2026-10-05 | see `git log --grep "M2"` |
 | M3 | Orchestrator core | `NOT_STARTED` | 6, 11, 13, 14 | — | — |
 | M4 | Gateway | `NOT_STARTED` | 5, 14 | — | — |
 | M5 | Idempotency & unknown outcomes | `NOT_STARTED` | 6, 12 | — | — |
@@ -117,35 +117,35 @@ Acceptance — `tests/integration/ledger.test.ts` (26 tests) + `services/ledger/
 **Scope:** migrations, every RPC, chaos engine, metrics, health. Runs as two instances.
 
 Implementation
-- [ ] `migrations/0001_init.sql` — accounts, operations with PK `(reference_id, operation)`, `applied_has_money` check
-- [ ] `Debit` with the atomic conditional `UPDATE`
-- [ ] `Credit`
-- [ ] `ReverseDebit` (succeeds even on a `BLOCKED` account)
-- [ ] `Resolve` with tombstone insert
-- [ ] `GetOperation`
-- [ ] Admin RPCs: `CreateAccount`, `GetAccount`, `SetChaosConfig`, `GetChaosConfig`
-- [ ] `chaos/prng.ts` (mulberry32) and `chaos/chaos.ts`
-- [ ] Metrics `bank_operations_total{operation, result}`, `chaos_injected_total{mode}`
-- [ ] `/healthz`, `/readyz`, `/metrics` on 9111 / 9112
+- [x] `migrations/0001_init.sql` — accounts, operations with PK `(reference_id, operation)`, `applied_has_money` check
+- [x] `Debit` with the atomic conditional `UPDATE`
+- [x] `Credit`
+- [x] `ReverseDebit` (succeeds even on a `BLOCKED` account)
+- [x] `Resolve` with tombstone insert
+- [x] `GetOperation`
+- [x] Admin RPCs: `CreateAccount`, `GetAccount`, `SetChaosConfig`, `GetChaosConfig`
+- [x] `chaos/prng.ts` (mulberry32) and `chaos/chaos.ts`
+- [x] Metrics `bank_operations_total{operation, result}`, `chaos_injected_total{mode}`
+- [x] `/healthz`, `/readyz`, `/metrics` on 9111 / 9112
 
-Acceptance
-- [ ] `Debit` is idempotent — a replay returns the original result, balance changes once
-- [ ] `Credit` is idempotent
-- [ ] `ReverseDebit` is idempotent
-- [ ] Insufficient funds leaves **no** operation row (whole transaction rolled back)
-- [ ] Missing account returns `NOT_FOUND` / `ACCOUNT_NOT_FOUND`
-- [ ] Blocked account returns `FAILED_PRECONDITION` / `ACCOUNT_BLOCKED`
-- [ ] 50 concurrent debits against funds sufficient for 10 produce exactly 10 successes
-- [ ] A `Resolve` tombstone beats a later `Debit` — the late debit gets `REFERENCE_VOIDED`
-- [ ] A committed `Debit` beats `Resolve` — `Resolve` returns `APPLIED`
-- [ ] Chaos mode `down` returns `UNAVAILABLE` for money RPCs and leaves admin RPCs working
-- [ ] Chaos `reject_rate` behaves as specified
-- [ ] Chaos `late_apply_rate` behaves as specified
-- [ ] Chaos `lost_response_rate` behaves as specified
-- [ ] Chaos latency range behaves as specified
-- [ ] The same `seed` produces the identical sequence of injected failures
-- [ ] `SetChaosConfig` rejects configs whose three rates sum above 1
-- [ ] A balance can never go negative (`CHECK` constraint verified)
+Acceptance — `tests/integration/mockBank.test.ts` (33 tests) + `services/mockBank/test` (unit)
+- [x] `Debit` is idempotent — a replay returns the original result, balance changes once
+- [x] `Credit` is idempotent
+- [x] `ReverseDebit` is idempotent
+- [x] Insufficient funds leaves **no** operation row (whole transaction rolled back)
+- [x] Missing account returns `NOT_FOUND` / `ACCOUNT_NOT_FOUND`
+- [x] Blocked account returns `FAILED_PRECONDITION` / `ACCOUNT_BLOCKED`
+- [x] 50 concurrent debits against funds sufficient for 10 produce exactly 10 successes
+- [x] A `Resolve` tombstone beats a later `Debit` — the late debit gets `REFERENCE_VOIDED`
+- [x] A committed `Debit` beats `Resolve` — `Resolve` returns `APPLIED`
+- [x] Chaos mode `down` returns `UNAVAILABLE` for money RPCs and leaves admin RPCs working
+- [x] Chaos `reject_rate` behaves as specified
+- [x] Chaos `late_apply_rate` behaves as specified
+- [x] Chaos `lost_response_rate` behaves as specified
+- [x] Chaos latency range behaves as specified
+- [x] The same `seed` produces the identical sequence of injected failures
+- [x] `SetChaosConfig` rejects configs whose three rates sum above 1
+- [x] A balance can never go negative (`CHECK` constraint verified)
 
 ## M3 — Orchestrator core
 

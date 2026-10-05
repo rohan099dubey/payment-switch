@@ -16,9 +16,9 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **M2 — Mock Bank** (not started). M0 and M1 are `DONE`. |
-| **Next action** | `services/mockBank/migrations/0001_init.sql`, then `Debit` with the atomic conditional `UPDATE`. Copy the `services/ledger` layout exactly. |
-| **Read first for M2** | `ARCHITECTURE.md` sections 8, 10, 14 |
+| **Active milestone** | **M3 — Orchestrator core** (not started). M0, M1, M2 are `DONE`. |
+| **Next action** | Resolve the two open questions in `PROGRESS.md` first (ADR-010 budget, ledger trigger error mapping), then `services/orchestrator/migrations/0001_init.sql` and `domain/states.ts` + `domain/transitions.ts` |
+| **Read first for M3** | `ARCHITECTURE.md` sections 6, 11, 13, 14 |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
@@ -140,6 +140,7 @@ Computed against a baseline snapshot taken before each run.
 | `test*` scripts use vitest **projects** (`unit`/`integration`/`chaos`), not `--dir` | `ADR-013` |
 | `schema_migrations` has an extra `checksum` column; pending files apply in **one** transaction | `ADR-014` |
 | Ledger migration `0003_forbid_truncate.sql` (statement-level `BEFORE TRUNCATE` triggers) | `ADR-015` |
+| Mock Bank: 4 extra error codes, replay `balance_after` = current balance, Credit can be `CURRENCY_MISMATCH`, runtime `slow_ms` check | `ADR-016` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
 
