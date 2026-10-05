@@ -13,7 +13,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M0 | Scaffold | `DONE` | 2, 3, 9, 15, 17 | 2026-10-05 | see `git log --grep "M0"` |
 | M1 | Ledger | `DONE` | 7, 10, 14 | 2026-10-05 | see `git log --grep "M1"` |
 | M2 | Mock Bank | `DONE` | 8, 10, 14 | 2026-10-05 | see `git log --grep "M2"` |
-| M3 | Orchestrator core | `NOT_STARTED` | 6, 11, 13, 14 | — | — |
+| M3 | Orchestrator core | `DONE` | 6, 11, 13, 14 | 2026-10-06 | see `git log --grep "M3"` |
 | M4 | Gateway | `NOT_STARTED` | 5, 14 | — | — |
 | M5 | Idempotency & unknown outcomes | `NOT_STARTED` | 6, 12 | — | — |
 | M6 | Recovery | `NOT_STARTED` | 6, 13 | — | — |
@@ -28,8 +28,8 @@ Most of the work is in **M3, M5 and M6**.
 
 | # | Question | Raised | Resolve by | Status |
 |---|---|---|---|---|
-| 1 | Inline saga budget (8000 ms) is smaller than the worst-case debit step (12000 ms), so `202` will be the common response under chaos. Tune the budget, reduce retry counts, or accept `202`? See `ADR-010`. | Session 0 | M3 | **OPEN** |
-| 2 | A Ledger DB-trigger rejection reaches the Orchestrator as `INTERNAL`, which `classify` reads as `UNKNOWN_OUTCOME` (retry), not `BUG`. Map Postgres `P0001` from the Ledger's own triggers to `FAILED_PRECONDITION`? Only reachable if app validation has a bug. See `SESSION_LOG.md`, M1 gotchas. | Session 1 (M1) | M3 | **OPEN** |
+| 1 | Inline saga budget (8000 ms) is smaller than the worst-case debit step (12000 ms), so `202` will be the common response under chaos. Tune the budget, reduce retry counts, or accept `202`? See `ADR-010`. | Session 0 | M3 | **RESOLVED** (M3): spec numbers kept, `202` is normal, the budget is a hard bound (per-call deadlines clipped). `ADR-010` |
+| 2 | A Ledger DB-trigger rejection reaches the Orchestrator as `INTERNAL`, which `classify` reads as `UNKNOWN_OUTCOME` (retry), not `BUG`. Map Postgres `P0001` from the Ledger's own triggers to `FAILED_PRECONDITION`? Only reachable if app validation has a bug. See `SESSION_LOG.md`, M1 gotchas. | Session 1 (M1) | M3 | **RESOLVED** (M3): yes, `P0001`/`23514` become `FAILED_PRECONDITION` / `LEDGER_INVARIANT_VIOLATION`. `ADR-017` |
 
 ## M0 — Scaffold
 
@@ -151,34 +151,35 @@ Acceptance — `tests/integration/mockBank.test.ts` (33 tests) + `services/mockB
 
 **Scope:** migrations, repos, `transition()` with CAS + events, saga success path,
 definite-failure paths, bank and ledger clients, `CreateTransfer`, `GetTransfer`.
-**No recovery worker yet** (that is M6).
+**No recovery worker yet** (that is M6). Unspecified details: `ADR-018`.
 
 Implementation
-- [ ] `migrations/0001_init.sql` — transfers, transfer_events, both indexes, idempotency unique constraint
-- [ ] `domain/states.ts` — state enum, terminal set, allowed-transition map
-- [ ] `domain/transitions.ts` — `transition()`: CAS on `(id, version, lease_owner)` + events insert in one transaction, throws `StaleTransferError` on zero rows
-- [ ] `domain/saga.ts` — `SagaEngine.advance()`, dependencies injected (repo, clients, clock)
-- [ ] `domain/policy.ts` — timeouts, retry counts, backoff from config
-- [ ] `domain/failureCodes.ts` — constants and the bank-error-code mapping
-- [ ] `repo/transfersRepo.ts` — insert-with-idempotency, get, CAS update, lease acquire/release, `claimDue`
-- [ ] `repo/eventsRepo.ts`
-- [ ] `clients/bankClients.ts` — `bank_id` to client from `BANK_ENDPOINTS`
-- [ ] `clients/ledgerClient.ts` — the three journal templates
-- [ ] `CreateTransfer` — all 5 steps from spec §6
-- [ ] `GetTransfer` — scoped to the owning `client_id`
-- [ ] Metrics: `transfers_total`, `transfer_duration_seconds`, `saga_step_duration_seconds`, `downstream_calls_total`
-- [ ] Graceful `SIGTERM` shutdown
+- [x] `migrations/0001_init.sql` — transfers, transfer_events, both indexes, idempotency unique constraint
+- [x] `domain/states.ts` — state enum, terminal set, allowed-transition map
+- [x] `domain/transitions.ts` — `transition()`: CAS on `(id, version, lease_owner)` + events insert in one transaction, throws `StaleTransferError` on zero rows (also matches `state`, `ADR-018`)
+- [x] `domain/saga.ts` — `SagaEngine.advance()`, dependencies injected (repo, clients, clock)
+- [x] `domain/policy.ts` — timeouts, retry counts, backoff from config
+- [x] `domain/failureCodes.ts` — constants and the bank-error-code mapping
+- [x] `repo/transfersRepo.ts` — insert-with-idempotency, get, CAS update, lease acquire/release, `claimDue`
+- [x] `repo/eventsRepo.ts`
+- [x] `clients/bankClients.ts` — `bank_id` to client from `BANK_ENDPOINTS`
+- [x] `clients/ledgerClient.ts` — the three journal templates
+- [x] `CreateTransfer` — all 5 steps from spec §6 (replay observed on terminal transfers; replay *while in flight* is M5's acceptance)
+- [x] `GetTransfer` — scoped to the owning `client_id`
+- [x] Metrics: `transfers_total`, `transfer_duration_seconds`, `saga_step_duration_seconds`, `downstream_calls_total`
+- [x] Graceful `SIGTERM` shutdown
 
-Acceptance
-- [ ] Unit tests of the transition map (every legal and illegal transition)
-- [ ] Unit tests of the saga using fakes, no database
-- [ ] Integration test through gRPC: `SUCCESS` happy path
-- [ ] Integration test: `FAILED` on insufficient funds
-- [ ] Integration test: `REVERSED` on a missing payee account, payer refunded
-- [ ] The `transfer_events` trail is correct and complete for all three paths
-- [ ] Business failures return gRPC `OK` with a `failure_code`, **not** a gRPC error
-- [ ] Validation errors: `SAME_ACCOUNT`, `UNKNOWN_BANK`, `INVALID_AMOUNT`, `UNSUPPORTED_CURRENCY`
-- [ ] `ADR-010` resolved and recorded
+Acceptance — `tests/integration/orchestrator.test.ts` (25) + `orchestratorRepo.test.ts` (16) + `services/orchestrator/test` (unit, 239)
+- [x] Unit tests of the transition map (every legal and illegal transition)
+- [x] Unit tests of the saga using fakes, no database
+- [x] Integration test through gRPC: `SUCCESS` happy path
+- [x] Integration test: `FAILED` on insufficient funds
+- [x] Integration test: `REVERSED` on a missing payee account, payer refunded
+- [x] The `transfer_events` trail is correct and complete for all three paths
+- [x] Business failures return gRPC `OK` with a `failure_code`, **not** a gRPC error
+- [x] Validation errors: `SAME_ACCOUNT`, `UNKNOWN_BANK`, `INVALID_AMOUNT`, `UNSUPPORTED_CURRENCY`
+- [x] (added) Ledger DB-invariant rejection → `FAILED_PRECONDITION` (`ADR-017`), verified with a mutant Ledger
+- [x] `ADR-010` resolved and recorded
 
 ## M4 — Gateway
 
@@ -219,7 +220,7 @@ Acceptance
 - [ ] A different body with the same key returns 409 `IDEMPOTENCY_KEY_REUSED`
 - [ ] 50 concurrent identical requests produce exactly one transfer and one bank debit
 - [ ] Two different clients using the same key string do not collide
-- [ ] `lost_response_rate = 1` still ends in `SUCCESS` with exactly one debit
+- [ ] `lost_response_rate = 1` still ends in `SUCCESS` with exactly one debit — **needs recovery: verify and tick in the M6 session, not M5** (`ADR-010`)
 
 ## M6 — Recovery
 

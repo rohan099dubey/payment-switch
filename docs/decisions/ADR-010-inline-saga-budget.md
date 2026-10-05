@@ -1,6 +1,6 @@
 # ADR-010 — Inline saga budget versus the `202` path
 
-- **Status:** **OPEN** — decide during M3
+- **Status:** Accepted (decided in M3, 2026-10-05)
 - **Date raised:** 2026-10-05
 - **Milestone:** M3
 
@@ -64,15 +64,56 @@ it is worth deciding deliberately rather than discovering in M7:
 
 ## Decision
 
-TODO — M3.
+**Option 1, made strict: keep every spec number, accept `202` as a normal outcome, and
+make the inline budget a hard bound rather than a loop-top check.**
 
-Leaning toward **option 1 plus the test-polling discipline**, because the spec's
-constraint that `slow_ms` must exceed `BANK_CALL_TIMEOUT_MS` means timeouts are
-*intended* to happen, and a design whose asynchronous path is exercised constantly is
-better tested than one where it is a rare branch. Option 3 is a reasonable addition if
-inline latency turns out to matter for the k6 numbers in M8.
+All values stay exactly as section 14 gives them (8000 / 10000 / 2000 / 2000 / 2 / 2).
+The project owner stated no preference, so per `CLAUDE.md` the stricter option wins.
+Options 2 and 3 change spec numbers to make a symptom rarer; neither closes the gap
+(12000 ms still exceeds 9000 ms; a four-step path still exceeds 8000 ms), so they would
+only hide the asynchronous path, not remove it.
+
+The real defect is not the size of the budget but that section 6's pseudocode checks the
+deadline **only at the top of the loop**. A step that starts at 7.9 s can then run for
+another 12 s, so `CreateTransfer` would answer after ~20 s, long after the Gateway's
+`ORCHESTRATOR_TIMEOUT_MS` (10 s) gave up. The client would see a gateway timeout instead
+of the intended `202`. That breaks the guarantee the startup check
+"`SAGA_INLINE_BUDGET_MS` < `ORCHESTRATOR_TIMEOUT_MS`" exists to give. So, in inline mode:
+
+1. **Every downstream attempt checks the deadline before it starts.** If less than
+   `MIN_ATTEMPT_MS` (100 ms) of the budget is left, the attempt is not made; the step
+   result is `UNKNOWN_OUTCOME` and the saga yields. Not calling is always safe in a
+   `*_SENT` state: the intent is already committed, so recovery makes the call.
+2. **Each call's gRPC deadline is `min(BANK_CALL_TIMEOUT_MS or LEDGER_CALL_TIMEOUT_MS,
+   time left in the budget)`.** A shorter deadline can only turn a would-be answer into
+   an unknown outcome, which the design already settles with retries and `Resolve`.
+   It can never turn an unknown into a failure.
+3. **Inline retries stop when the budget is spent**, even if `INLINE_*_RETRIES` attempts
+   remain (`withRetry`'s `shouldRetry` also checks the remaining budget).
+
+Result: inline `advance` returns within `SAGA_INLINE_BUDGET_MS` plus one CAS round trip,
+always inside the Gateway's 10 s. In recovery mode (M6) there is no inline deadline and
+calls use the full per-call timeouts.
+
+Point 2 shortens a per-call deadline below the section 14 table value, so it is listed
+under "Active deviations" in `docs/CONTEXT.md`.
 
 ## Consequences
 
-TODO once decided. Must state explicitly whether M5's `lost_response_rate = 1`
-acceptance criterion is deferred until M6 lands.
+- **`202` is a normal outcome, not an error.** Every integration test from M3 onward
+  that creates a transfer goes through one helper that accepts the `CreateTransfer`
+  response and, if it is non-terminal, polls `GetTransfer` until the transfer is
+  terminal or a timeout expires. No test asserts "terminal on the create call" except
+  where the scenario guarantees it (chaos off, all services up).
+- **Before M6 a yielded transfer never progresses**, because nothing drives it. The M3
+  integration tests run with chaos off, where every path completes inline in tens of
+  milliseconds. A yield in M3 tests is therefore a real failure, and the poll helper
+  times out and fails the test rather than masking it.
+- **M5's `lost_response_rate = 1` criterion is deferred until M6 lands.** With every
+  response lost, every inline attempt times out and the saga must yield; only the
+  recovery worker (re-run, then `Resolve` → `APPLIED`) can finish it. M5 must not tick
+  that box. It is verified, by polling, in the M6 session, and the M5 box is ticked
+  then with a note.
+- The k6 numbers in M8 are measured with chaos off, where the budget is never touched.
+  If inline latency under chaos matters later, option 3 can still be added by config,
+  with no code change.

@@ -8,6 +8,8 @@
     { "path": "services/ledger/test" },
     { "path": "services/mockBank" },
     { "path": "services/mockBank/test" },
+    { "path": "services/orchestrator" },
+    { "path": "services/orchestrator/test" },
     { "path": "tests" }
   ]
 }

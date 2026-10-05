@@ -16,9 +16,9 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **M3 — Orchestrator core** (not started). M0, M1, M2 are `DONE`. |
-| **Next action** | Resolve the two open questions in `PROGRESS.md` first (ADR-010 budget, ledger trigger error mapping), then `services/orchestrator/migrations/0001_init.sql` and `domain/states.ts` + `domain/transitions.ts` |
-| **Read first for M3** | `ARCHITECTURE.md` sections 6, 11, 13, 14 |
+| **Active milestone** | **M4 — Gateway** (not started). M0, M1, M2, M3 are `DONE`. |
+| **Next action** | `services/gateway`: mirror the other services' layout, then `POST /v1/auth/token` and the gRPC-to-HTTP mapper (`202` + `Location` for a non-terminal transfer, per ADR-010) |
+| **Read first for M4** | `ARCHITECTURE.md` sections 5, 14 |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
@@ -141,6 +141,9 @@ Computed against a baseline snapshot taken before each run.
 | `schema_migrations` has an extra `checksum` column; pending files apply in **one** transaction | `ADR-014` |
 | Ledger migration `0003_forbid_truncate.sql` (statement-level `BEFORE TRUNCATE` triggers) | `ADR-015` |
 | Mock Bank: 4 extra error codes, replay `balance_after` = current balance, Credit can be `CURRENCY_MISMATCH`, runtime `slow_ms` check | `ADR-016` |
+| Inline saga budget is a **hard bound**: each call's deadline is `min(per-call timeout, budget left)`, no attempt with < 100 ms left, retry sleeps capped at the deadline | `ADR-010` |
+| Ledger maps its own trigger/CHECK rejections (`P0001`, `23514`) to `FAILED_PRECONDITION` / `LEDGER_INVARIANT_VIOLATION` (was `INTERNAL`) | `ADR-017` |
+| Orchestrator: CAS also matches `state`; unrecognised bank errors are `BANK_INVARIANT_VIOLATION`; `INVALID_REQUEST`/`TRANSFER_NOT_FOUND` codes; extra startup checks | `ADR-018` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
 
@@ -152,15 +155,23 @@ means `attempts: 3`; generated code is imported as `@switch/proto-gen/bank/v1` (
 v24, which is forward-compatible with the ES2022/CommonJS target; Docker and CI pin
 `node:22-alpine`, and `.nvmrc` records 22.
 
-## Known open question
+## Known open questions
 
-**ADR-010 — the inline saga budget does not close.** `SAGA_INLINE_BUDGET_MS` is 8000 ms,
-but one debit step can consume 3 bank attempts x 2000 ms plus 3 ledger attempts x 2000 ms
-= 12000 ms. Under chaos the inline saga will routinely `yield`, and the Gateway returns
-**`202`**, not `201`. That is correct behaviour, but it means the M6 recovery worker is
-load-bearing much earlier than the M0 to M9 ordering implies, and integration tests
-written in M3 to M5 must treat `202` as a normal outcome rather than a failure. Resolve
-this during M3.
+None. Both questions from M0–M2 were resolved in M3 (`ADR-010`, `ADR-017`). Two facts
+from that resolution shape every later milestone:
+
+- **`202` is a normal outcome.** Integration tests pass the `CreateTransfer` response to
+  `awaitTerminal` (`tests/helpers/transfers.ts`), which polls `GetTransfer`. Before M6 a
+  yielded transfer never progresses, so with chaos off a yield fails the test.
+- **M5's `lost_response_rate = 1` box can only pass once the M6 recovery worker exists.**
+  Verify and tick it in the M6 session.
+
+**Shape notes from M3:** `SagaEngine.advance(transfer, {mode, deadline?, leaseOwner,
+requestId?})` already handles inline retries and `yield` (section 6 pseudocode), so M5
+mostly *verifies* them. M6 calls `advance` with `mode: 'recovery'` and uses
+`claimDue`/`acquireLease` from `repo/transfersRepo.ts`. `tests/tsconfig.json` references
+`services/orchestrator`, so integration tests may import its `src/` for repo-level SQL
+tests.
 
 ## Doc map
 
