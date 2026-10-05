@@ -1,0 +1,41 @@
+%% System architecture: 4 services, 4 data stores.
+%% Source: ARCHITECTURE.md section 4.
+flowchart TB
+    client([Client])
+
+    subgraph edge["Public edge"]
+        gw["<b>Gateway</b><br/>HTTP 8080<br/>auth · rate limit · validate<br/>no database"]
+    end
+
+    subgraph core["Payment switch"]
+        orch["<b>Orchestrator</b><br/>gRPC 50051 · HTTP 9101<br/>saga · recovery worker"]
+        ldg["<b>Ledger</b><br/>gRPC 50052 · HTTP 9102<br/>double-entry, append-only"]
+    end
+
+    subgraph ext["External banks (mock)"]
+        bka["<b>Mock Bank A</b><br/>gRPC 50061 · HTTP 9111"]
+        bkb["<b>Mock Bank B</b><br/>gRPC 50062 · HTTP 9112"]
+    end
+
+    redis[("Redis 7<br/>rate-limit buckets<br/><i>no money, no state</i>")]
+    pgo[("postgres-orchestrator<br/>orchestrator_db<br/>transfers · transfer_events")]
+    pgl[("postgres-ledger<br/>ledger_db<br/>accounts · journals · entries")]
+    pgb[("postgres-banks<br/>bank_a · bank_b<br/>accounts · operations")]
+
+    client -->|"HTTPS / REST"| gw
+    gw -->|"gRPC CreateTransfer / GetTransfer<br/>deadline 10s / 3s"| orch
+    gw -.->|"EVALSHA token bucket"| redis
+
+    orch -->|"gRPC Debit / Credit<br/>ReverseDebit / Resolve<br/>deadline 2s"| bka
+    orch -->|"gRPC Debit / Credit<br/>ReverseDebit / Resolve<br/>deadline 2s"| bkb
+    orch -->|"gRPC PostJournal<br/>deadline 2s"| ldg
+
+    orch --- pgo
+    ldg --- pgl
+    bka --- pgb
+    bkb --- pgb
+
+    classDef svc fill:#1e3a5f,stroke:#4a90d9,stroke-width:2px,color:#fff
+    classDef store fill:#2d2d2d,stroke:#888,stroke-width:1px,color:#eee
+    class gw,orch,ldg,bka,bkb svc
+    class redis,pgo,pgl,pgb store

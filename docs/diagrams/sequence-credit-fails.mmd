@@ -1,0 +1,38 @@
+%% Compensation: payee account does not exist, so the debit is reversed.
+%% Source: ARCHITECTURE.md section 11, "Walkthrough: payee account does not exist".
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant G as Gateway
+    participant O as Orchestrator
+    participant A as Mock Bank A
+    participant L as Ledger
+    participant B as Mock Bank B
+
+    C->>G: POST /v1/transfers (payee ACC999 does not exist)
+    G->>O: CreateTransfer
+
+    Note over O: INITIATED -> DEBIT_SENT, then the debit succeeds.
+    O->>A: Debit(reference_id, amount)
+    A-->>O: APPLIED
+    O->>L: PostJournal(debit-leg)<br/>D receivable:bank_a / C transit
+    L-->>O: ok
+    Note over O: state = DEBITED -> CREDIT_SENT
+
+    O->>B: Credit(reference_id, amount)
+    B-->>O: NOT_FOUND<br/>x-error-code: ACCOUNT_NOT_FOUND
+    Note over O: classify() = DEFINITE_FAILURE.<br/>Credit failing definitely means REVERSING,<br/>never FAILED - the payer has already been debited.
+    O->>O: CAS to REVERSING<br/>failure_code = PAYEE_ACCOUNT_NOT_FOUND
+
+    O->>A: ReverseDebit(reference_id)
+    Note over A: Reads the APPLIED DEBIT row, inserts<br/>REVERSE_DEBIT, adds the amount back.<br/>Succeeds even if the account is now BLOCKED -<br/>a refund must always succeed.
+    A-->>O: APPLIED, balance_after
+    O->>L: PostJournal(transfer:{id}:reversal)<br/>D transit / C receivable:bank_a
+    L-->>O: ok
+    Note over L: The reversal undoes the debit leg exactly.<br/>transit returns to zero.
+    O->>O: CAS to REVERSED (terminal)
+
+    O-->>G: Transfer{state=REVERSED,<br/>failure_code=PAYEE_ACCOUNT_NOT_FOUND}
+    G-->>C: 422 Unprocessable Entity, status REVERSED
+
+    Note over C,B: Business failures are gRPC OK with a failure_code,<br/>not gRPC errors. Money is conserved: the payer<br/>was debited and then refunded.

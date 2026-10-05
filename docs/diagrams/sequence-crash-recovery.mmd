@@ -1,0 +1,52 @@
+%% Crash recovery: the Orchestrator dies after the bank applied the debit
+%% but before DEBITED was saved.
+%% Source: ARCHITECTURE.md section 11, "Walkthrough: the Orchestrator crashes
+%% mid-transfer", and section 13 scenario 6.
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant G as Gateway
+    participant O1 as Orchestrator #1
+    participant DB as orchestrator_db
+    participant A as Mock Bank A
+    participant O2 as Orchestrator #2<br/>(recovery worker)
+    participant L as Ledger
+
+    C->>G: POST /v1/transfers (Idempotency-Key k1)
+    G->>O1: CreateTransfer
+    O1->>DB: INSERT state=INITIATED, lease_owner=inst1
+    O1->>DB: CAS to DEBIT_SENT (+ event)
+    Note over O1,DB: Intent is durable. This is the only reason<br/>what follows is recoverable.
+
+    O1->>A: Debit(reference_id = transfer id)
+    A->>A: balance -= amount, operation row committed
+    A-->>O1: APPLIED
+
+    rect rgba(200,60,60,0.18)
+        Note over O1: CRASH before DEBITED is written.
+        O1--xDB: (state stays DEBIT_SENT)
+    end
+
+    G-->>C: 503 / connection error
+    Note over C: Client retries with the SAME key k1.<br/>That is safe by design.
+
+    Note over DB: lease_expires_at passes (LEASE_MS = 15s).<br/>The transfer is now claimable.
+
+    loop every RECOVERY_POLL_MS (1s)
+        O2->>DB: claim query: non-terminal,<br/>next_attempt_at <= now(),<br/>lease null or expired,<br/>FOR UPDATE SKIP LOCKED
+    end
+    DB-->>O2: transfer (state=DEBIT_SENT), lease_owner=inst2
+
+    O2->>A: Debit(reference_id = transfer id)  [same key]
+    Note over A: ON CONFLICT on (reference_id,'DEBIT').<br/>Returns the ORIGINAL result.<br/>The balance does NOT change again.
+    A-->>O2: APPLIED (idempotent replay)
+
+    O2->>L: PostJournal(debit-leg)
+    L-->>O2: ok
+    O2->>DB: CAS to DEBITED (+ event)
+    Note over O2: Carries on through CREDIT_SENT to SUCCESS.
+
+    C->>G: GET /v1/transfers/{id}
+    G-->>C: 200, status SUCCEEDED
+
+    Note over C,L: Exactly-once held: one bank debit, one debit-leg journal,<br/>despite a crash between the two.

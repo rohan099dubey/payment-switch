@@ -1,0 +1,40 @@
+%% Happy path: 12,500 paise from bank_a to bank_b, finishing inline.
+%% Source: ARCHITECTURE.md section 11, "Walkthrough: success".
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant G as Gateway
+    participant O as Orchestrator
+    participant DB as orchestrator_db
+    participant A as Mock Bank A
+    participant L as Ledger
+    participant B as Mock Bank B
+
+    C->>G: POST /v1/transfers<br/>Idempotency-Key: k1<br/>amount 12500
+    G->>G: verify JWT, rate limit, zod validate
+    G->>O: CreateTransfer(client_id from sub, k1)
+
+    O->>DB: INSERT transfers ON CONFLICT DO NOTHING<br/>state=INITIATED, lease owned
+    Note over O,DB: Row returned, so this call owns the transfer.<br/>Also inserts transfer_events (NULL -> INITIATED).
+
+    O->>DB: CAS to DEBIT_SENT (+ event)
+    Note over O: Intent persisted BEFORE the external call.
+    O->>A: Debit(reference_id = transfer id, 12500)
+    A->>A: UPDATE accounts SET balance = balance - 12500<br/>WHERE balance >= 12500 (atomic)
+    A-->>O: APPLIED, balance_after
+    O->>L: PostJournal(transfer:{id}:debit-leg)<br/>D receivable:bank_a / C transit
+    L-->>O: journal, replayed=false
+    O->>DB: CAS to DEBITED (+ event)
+
+    O->>DB: CAS to CREDIT_SENT (+ event)
+    O->>B: Credit(reference_id = transfer id, 12500)
+    B-->>O: APPLIED, balance_after
+    O->>L: PostJournal(transfer:{id}:credit-leg)<br/>D transit / C payable:bank_b
+    L-->>O: journal, replayed=false
+    O->>DB: CAS to CREDITED (+ event)
+
+    O->>DB: CAS to SUCCESS (+ event, lease cleared)
+    O-->>G: Transfer{state=SUCCESS}, replayed=false
+    G-->>C: 201 Created, status SUCCEEDED
+
+    Note over A,B: Payer has 12,500 less at bank_a,<br/>payee 12,500 more at bank_b,<br/>and transit is back to zero.
