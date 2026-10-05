@@ -1,0 +1,161 @@
+# CONTEXT — read this first
+
+Orientation primer. Deliberately short so it is cheap to re-read at the start of every
+session. `ARCHITECTURE.md` is the source of truth; this file compresses it and never
+contradicts it. If something here is wrong, fix it here — do not edit the spec.
+
+## What this is
+
+A mini UPI-style **payment switch**. A client asks it to move money from an account at
+one mock bank to an account at another. The switch debits the payer's bank, credits the
+payee's bank, and records every movement in a **double-entry ledger**. The result is
+**exactly-once** even when banks time out, responses are lost, or the switch itself
+crashes mid-transfer.
+
+## Where I am
+
+| | |
+|---|---|
+| **Active milestone** | **M0 — Scaffold** (not started) |
+| **Next action** | npm workspaces, `tsconfig.base.json`, eslint/prettier, buf config, the three `.proto` files, `@switch/common`, Dockerfile, Compose (3x Postgres + Redis), CI `static` job |
+| **Read first for M0** | `ARCHITECTURE.md` sections 2, 3, 9, 15, 17 |
+
+`docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
+believe `PROGRESS.md` and correct this one.
+
+## Services
+
+Four deployable services. Never merged, never sharing a database. Only the Gateway
+speaks HTTP to the outside; everything internal is gRPC.
+
+| Service | Ports | Owns | Calls |
+|---|---|---|---|
+| Gateway | HTTP 8080 | nothing durable (Redis = rate-limit buckets only) | Orchestrator |
+| Orchestrator | gRPC 50051, HTTP 9101 | `orchestrator_db`: `transfers`, `transfer_events` | both banks, Ledger |
+| Ledger | gRPC 50052, HTTP 9102 | `ledger_db`: `accounts`, `journals`, `entries` | nothing (leaf) |
+| Mock Bank A | gRPC 50061, HTTP 9111 | db `bank_a` | nothing |
+| Mock Bank B | gRPC 50062, HTTP 9112 | db `bank_b` | nothing |
+
+Orchestrator and Ledger each get a dedicated Postgres container. The two banks share
+one container (`postgres-banks`, two databases) because they stand in for *external*
+systems. HTTP ports serve `/healthz`, `/readyz`, `/metrics` only.
+
+## The state machine
+
+Ten states, four terminal. Nothing ever leaves a terminal state, and **a timeout never
+changes the current state**.
+
+```text
+INITIATED -> DEBIT_SENT -> DEBITED -> CREDIT_SENT -> CREDITED -> SUCCESS  (terminal)
+                  |                        |
+                  | definite failure       | definite failure
+                  v                        v
+             FAILED (terminal)        REVERSING -> REVERSED (terminal)
+                                           |
+                       bug / 20 attempts   v
+                             NEEDS_MANUAL_REVIEW (terminal)
+```
+
+`*_SENT` is a **write-ahead state**: it means the call was attempted and its outcome is
+not yet recorded. It is committed *before* the external call, which is the whole reason
+a crash is recoverable. `DEBITED` means the bank confirmed **and** the ledger
+`debit-leg` is posted — both, not either.
+
+Each step has three possible outcomes, and that distinction is the heart of the design:
+
+| Outcome | Means | Reaction |
+|---|---|---|
+| `DEFINITE_FAILURE` | bank said no (`FAILED_PRECONDITION`, `NOT_FOUND`) | take the failure branch |
+| `UNKNOWN_OUTCOME` | timeout, `UNAVAILABLE`, socket reset — **money may or may not have moved** | stay in state; retry inline, then recovery, then settle with the bank's `Resolve` |
+| `BUG` | invariant broken (`INVALID_ARGUMENT`, ledger rejecting a journal) | `NEEDS_MANUAL_REVIEW`, never retried |
+
+When in doubt, classify as `UNKNOWN_OUTCOME` — it is the safe default because `Resolve`
+can always settle it.
+
+## Idempotency — three independent layers
+
+Each has its own key and its own **database constraint**. None relies on application
+logic.
+
+| Layer | Key | Enforced by |
+|---|---|---|
+| Client to Orchestrator | `(client_id, Idempotency-Key)` | `UNIQUE` on `transfers` |
+| Orchestrator to Bank | `(reference_id = transfer id, operation)` | primary key of bank's `operations` |
+| Orchestrator to Ledger | `transfer:{id}:{leg}` | `UNIQUE` on `journals.idempotency_key` |
+
+Internal keys are **derived from the transfer id, never random**, so a retry after a
+crash regenerates the identical key.
+
+`Resolve` is the mechanism that turns an unknown outcome into a decision: it inserts a
+`VOIDED` tombstone on `(reference_id, operation)`. If the real operation committed
+first, `Resolve` sees `APPLIED`. If the tombstone lands first, a late-arriving debit
+hits it and fails with `REFERENCE_VOIDED`, so it can never apply after being voided.
+The primary key arbitrates the race. Once `Resolve` answers, the answer never changes.
+
+## Non-negotiable rules
+
+1. **Persist intent before every external call.** That is what `*_SENT` exists for.
+2. **A timeout is an unknown outcome, never a failure.** Only a definite failure, or
+   `Resolve` returning `VOIDED`, moves a transfer to a failure state.
+3. **Every state change is a compare-and-set on `version`** plus a `transfer_events`
+   row, in one transaction. Zero rows updated means `StaleTransferError`: stop driving,
+   do not retry the write.
+4. **Money is `bigint` paise.** Never a float. (`int8` arrives from `pg` as a string —
+   convert with `BigInt()`.)
+5. **The ledger is append-only and every journal balances.** Enforced by database
+   triggers, not only by application code.
+6. Never hold a database transaction open across a gRPC call.
+7. Nothing that must survive a restart lives in memory. Integration tests run against
+   real Postgres and Redis, never mocks.
+
+## Invariants — the proof the project works
+
+Computed against a baseline snapshot taken before each run.
+
+| | |
+|---|---|
+| **I1** | Every journal balances; the ledger as a whole is zero-sum |
+| **I2** | Money is conserved — bank balances sum to the baseline sum; none negative |
+| **I3** | Nothing left in transit — `transit` returns to baseline once all transfers are terminal |
+| **I4** | Ledger agrees with each bank — balance change plus receivable/payable change is zero |
+| **I5** | Exactly-once effects per transfer, verified per final state |
+| **I6** | Everything finished — no non-terminal transfer, **zero** in `NEEDS_MANUAL_REVIEW` |
+| **I7** | Replays are idempotent — same transfer id, same final state |
+
+## Active deviations from ARCHITECTURE.md
+
+| Deviation | ADR |
+|---|---|
+| **Node 22 LTS**, not Node 20 (20 reached EOL April 2026) | `ADR-009` |
+| **Fastify 5** + `@fastify/jwt` v9, not Fastify 4 | `ADR-009` |
+
+PostgreSQL stays at 16. Everything else is verbatim per spec. The dev machine runs Node
+v24, which is forward-compatible with the ES2022/CommonJS target; Docker and CI pin
+`node:22-alpine`, and `.nvmrc` records 22.
+
+## Known open question
+
+**ADR-010 — the inline saga budget does not close.** `SAGA_INLINE_BUDGET_MS` is 8000 ms,
+but one debit step can consume 3 bank attempts x 2000 ms plus 3 ledger attempts x 2000 ms
+= 12000 ms. Under chaos the inline saga will routinely `yield`, and the Gateway returns
+**`202`**, not `201`. That is correct behaviour, but it means the M6 recovery worker is
+load-bearing much earlier than the M0 to M9 ordering implies, and integration tests
+written in M3 to M5 must treat `202` as a normal outcome rather than a failure. Resolve
+this during M3.
+
+## Doc map
+
+| Question | File |
+|---|---|
+| What is this, what are the rules, where am I? | **this file** |
+| What is done, what is next, what are the acceptance criteria? | `docs/PROGRESS.md` |
+| Why was something decided? What went wrong before? | `docs/SESSION_LOG.md` |
+| Why this design and not the obvious alternative? | `docs/decisions/ADR-*.md` |
+| Full detail on anything | `ARCHITECTURE.md` — read *sections*, not the whole file |
+
+`ARCHITECTURE.md` section guide: **2** tech stack, **3** repo layout, **4** system
+architecture, **5** Gateway, **6** Orchestrator, **7** Ledger, **8** Mock Bank,
+**9** protobuf contracts, **10** database schemas, **11** transfer lifecycle,
+**12** idempotency, **13** concurrency / failures / recovery, **14** errors / deadlines /
+retries, **15** config and deployment, **16** testing, **17** observability / CI / docs,
+**19** milestones, **20** definition of done, **21** forbidden shortcuts.

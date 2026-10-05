@@ -1,0 +1,42 @@
+%% Transfer state machine: 10 states, 4 terminal.
+%% Source: ARCHITECTURE.md section 11 (transition table).
+%% A timeout NEVER changes state - the transfer stays put and is retried,
+%% then settled by the bank's Resolve call.
+stateDiagram-v2
+    [*] --> INITIATED : CreateTransfer<br/>intent committed
+
+    INITIATED --> DEBIT_SENT : persist intent<br/>before calling bank
+
+    DEBIT_SENT --> DEBITED : bank Debit applied<br/>AND ledger debit-leg posted
+    DEBIT_SENT --> FAILED : definite failure<br/>INSUFFICIENT_FUNDS<br/>PAYER_ACCOUNT_NOT_FOUND<br/>PAYER_ACCOUNT_BLOCKED
+    DEBIT_SENT --> DEBIT_SENT : unknown outcome<br/>retry inline, then recovery
+    DEBIT_SENT --> FAILED : Resolve returned VOIDED<br/>DEBIT_NOT_CONFIRMED
+
+    DEBITED --> CREDIT_SENT : persist intent<br/>before calling bank
+
+    CREDIT_SENT --> CREDITED : bank Credit applied<br/>AND ledger credit-leg posted
+    CREDIT_SENT --> REVERSING : definite failure<br/>PAYEE_ACCOUNT_NOT_FOUND<br/>PAYEE_ACCOUNT_BLOCKED
+    CREDIT_SENT --> CREDIT_SENT : unknown outcome<br/>retry inline, then recovery
+    CREDIT_SENT --> REVERSING : Resolve returned VOIDED<br/>CREDIT_NOT_CONFIRMED
+
+    CREDITED --> SUCCESS : finalize
+
+    REVERSING --> REVERSED : ReverseDebit applied<br/>AND reversal journal posted
+    REVERSING --> REVERSING : unknown outcome<br/>retried with backoff until it works
+    REVERSING --> NEEDS_MANUAL_REVIEW : BUG only<br/>BANK_INVARIANT_VIOLATION
+
+    DEBIT_SENT --> NEEDS_MANUAL_REVIEW : BUG / LEDGER_REJECTED
+    CREDIT_SENT --> NEEDS_MANUAL_REVIEW : BUG / LEDGER_REJECTED
+    note right of NEEDS_MANUAL_REVIEW
+        Also reached from any
+        non-terminal state after
+        MAX_RECOVERY_ATTEMPTS (20)
+        with reason RECOVERY_EXHAUSTED.
+        The chaos test requires ZERO
+        transfers reach this state.
+    end note
+
+    SUCCESS --> [*]
+    FAILED --> [*]
+    REVERSED --> [*]
+    NEEDS_MANUAL_REVIEW --> [*]
