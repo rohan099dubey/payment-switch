@@ -11,16 +11,22 @@ export default defineConfig({
           include: ['packages/*/test/**/*.test.ts', 'services/*/test/**/*.test.ts'],
         },
       },
+      // Integration and chaos tests share one live stack and assert on balance deltas,
+      // so files run one at a time.
       {
         test: {
           name: 'integration',
           include: ['tests/integration/**/*.test.ts'],
+          fileParallelism: false,
+          testTimeout: 30_000,
+          hookTimeout: 30_000,
         },
       },
       {
         test: {
           name: 'chaos',
           include: ['tests/chaos/**/*.test.ts'],
+          fileParallelism: false,
         },
       },
     ],

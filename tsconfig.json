@@ -1,4 +1,11 @@
 {
   "files": [],
-  "references": [{ "path": "packages/proto-gen" }, { "path": "packages/common" }, { "path": "packages/common/test" }]
+  "references": [
+    { "path": "packages/proto-gen" },
+    { "path": "packages/common" },
+    { "path": "packages/common/test" },
+    { "path": "services/ledger" },
+    { "path": "services/ledger/test" },
+    { "path": "tests" }
+  ]
 }

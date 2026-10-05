@@ -93,11 +93,27 @@ with the machine and commit that produced it, and with the invariants green afte
 | [011](docs/decisions/ADR-011-buf-lint-exceptions.md) | Four `buf lint` exceptions for the verbatim contracts (deviation) |
 | [012](docs/decisions/ADR-012-ts-proto-plugin-invocation.md) | Run the ts-proto plugin through `node` (deviation) |
 | [013](docs/decisions/ADR-013-vitest-projects.md) | Test layers as vitest projects (deviation) |
+| [014](docs/decisions/ADR-014-migration-checksums.md) | Migration checksums, one transaction per batch (deviation) |
+| [015](docs/decisions/ADR-015-ledger-forbid-truncate.md) | The ledger also forbids `TRUNCATE` (deviation) |
 
 ## 8. What I built and why
 
 *(Five lines appended after each milestone. Must be explainable out loud without
 looking — that is what makes the project safe to put on a resume.)*
+
+**M0 — Scaffold**
+1. One npm-workspaces monorepo: shared code in `packages/`, each service in `services/`. Services share libraries but never a database or a process.
+2. Service contracts are `.proto` files, and TypeScript types are generated from them. A field mismatch between two services is a compile error, not a production bug.
+3. `classify()` sorts every downstream error into definite failure, unknown outcome or bug. Anything unrecognised counts as *unknown*, because a timeout must never be treated as a failure.
+4. Retries are explicit and opt-in: gRPC's built-in retries are off, and `withRetry` needs a predicate, so a definite failure can't be retried by accident.
+5. Migrations run under a Postgres advisory lock, all pending files in one transaction, with checksums so an edited migration stops startup.
+
+**M1 — Ledger**
+1. A double-entry ledger in which balances are derived by summing entries, never stored. So `transit`, touched by every transfer, never becomes a hot row that serialises all traffic.
+2. "Every journal balances" is enforced twice: by validation in the app and by a deferred constraint trigger at COMMIT. A mutation test proved the trigger catches what the app misses.
+3. The ledger is append-only in the database itself. Triggers reject UPDATE, DELETE and (beyond the spec, ADR-015) TRUNCATE, so history can't be rewritten even with raw SQL.
+4. Idempotency comes from a unique key plus `ON CONFLICT DO NOTHING`, with no application locks. 100 concurrent identical posts produce one journal and 99 replays.
+5. A reused key with a different body is rejected using a hash of the canonical request, so a retry can never silently post different amounts.
 
 ---
 

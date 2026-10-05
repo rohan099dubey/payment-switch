@@ -62,7 +62,9 @@ export async function startHealthServer(options: HealthServerOptions): Promise<H
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(options.port, options.host ?? '0.0.0.0', () => {
+    // No host means Node's dual-stack default (IPv4 and IPv6), so a container
+    // healthcheck against `localhost` works whichever address it resolves to first.
+    server.listen({ port: options.port, host: options.host }, () => {
       server.off('error', reject);
       resolve();
     });

@@ -1,0 +1,15 @@
+{
+  "name": "@switch/ledger",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Append-only double-entry ledger. gRPC 50052, HTTP 9102. Leaf service: calls nobody.",
+  "main": "dist/main.js",
+  "dependencies": {
+    "@grpc/grpc-js": "1.14.5",
+    "@switch/common": "0.0.0",
+    "@switch/proto-gen": "0.0.0",
+    "pg": "8.23.1",
+    "prom-client": "15.1.3",
+    "zod": "4.6.5"
+  }
+}

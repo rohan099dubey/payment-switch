@@ -203,3 +203,102 @@ M1's ledger integration tests exercise `migrate.ts` for real.
 
 **Open questions**
 - `ADR-010` is still open (resolve in M3).
+
+---
+
+## 2026-10-05 — Session 1 (continued) — M1 Ledger
+
+**Status at end:** M1 `DONE`, all boxes ticked. Same session as M0: the owner asked to
+continue here, which overrides the one-milestone-per-session note in `CLAUDE.md`.
+
+**Done**
+- `services/ledger`: `main.ts`, `config.ts`, `metrics.ts`, `grpc/{server,handlers}.ts`,
+  `domain/{validate,journalHash}.ts`, `repo/{journalRepo,balanceRepo}.ts`, and
+  migrations `0001` and `0002` (verbatim) plus `0003` (ADR-015).
+- `ledger` service in `docker-compose.yml` (Dockerfile `SERVICE=ledger`, ports 50052 and
+  9102, waits for `postgres-ledger` healthy, `wget /readyz` healthcheck).
+- Unit tests: `services/ledger/test/domain/{validate,journalHash}.test.ts`.
+- Integration tests: `tests/integration/ledger.test.ts`, 26 tests against the live
+  container plus raw SQL on `ledger_db`. `tests/tsconfig.json` is a composite project
+  in the root references, so tests are type-checked.
+- Fixed M0's `migrate.ts` to match §10 (column `filename`, not `version`; the M0 session
+  never read §10) and to apply all pending files in one transaction. → ADR-014
+
+**Verification**
+```text
+docker compose build ledger   -> first real build of the Dockerfile: OK
+npm run stack:up              -> 5/5 healthy (4 infra + ledger)
+ledger first start            -> migrations applied: 0001_init.sql, 0002_seed_accounts.sql
+ledger restart with 0003      -> migrations applied: 0003_forbid_truncate.sql only
+                                 (0001/0002 checksums matched: Windows LF == container)
+npm run test:integration      -> Tests 26 passed (26); re-run on a populated DB: 26 passed
+docker compose stop ledger    -> "ledger shutting down" / "ledger stopped", exit code 0
+```
+
+**Mutation check (the tests can actually fail).** A copy of the Ledger with two planted
+bugs ran on ports 50152/9202 against the same DB, with the suite pointed at it through
+`LEDGER_GRPC_ADDR` and `LEDGER_HTTP_URL`:
+1. Validation skips debits = credits. Result: "rejects an unbalanced journal in
+   application code" failed. The DB trigger still rejected the journal
+   (`unbalanced: debits 100 credits 99`), so nothing was committed.
+2. Hash mismatch ignored on a key conflict. Result: "returns ALREADY_EXISTS /
+   IDEMPOTENCY_KEY_REUSED" failed.
+
+Exactly 2 failed, 24 passed. Then I restored the files (hash-identical to the backups)
+and rebuilt.
+
+**Decisions**
+- **Repo returns outcomes, handlers throw gRPC errors.** `postJournal` returns
+  `created | replayed | key_reused | unknown_accounts`. An unknown account throws a
+  private error *inside* the transaction purely to roll it back, and is converted to an
+  outcome outside it. `repo/` never imports gRPC.
+- **Domain validation returns `{ok, reason}`, never throws**, so it has no transport
+  dependency and unit tests need no gRPC.
+- **No invented error codes.** `GetJournal` with a malformed id returns `NOT_FOUND` /
+  `JOURNAL_NOT_FOUND` (no journal can have that id). `ListJournals` with an empty
+  reference returns `[]`. `GetBalance` with an empty code returns `ACCOUNT_NOT_FOUND`.
+- **Idempotency key length is counted in code points** (`Array.from(key).length`), and
+  is unit-tested with emoji.
+- **Balances are computed in SQL**, one statement for both `GetBalance` and
+  `GetTrialBalance`, `CASE` on account type, `SUM` cast `::text` and converted with BigInt.
+- **Health server listens dual-stack** (no host given), because `wget localhost` inside
+  Alpine may resolve to `::1` first.
+- **Integration project runs files serially** (`fileParallelism: false`, 30 s
+  timeouts): every integration file shares one stack and asserts balance *deltas*.
+- **Test isolation without resets:** every key and reference is `m1-<run uuid>-<uuid>`,
+  so tests re-run on a populated DB and never need `down -v`.
+- **Root devDependencies now include `pg` and `@grpc/grpc-js`**, because `tests/` is not
+  a workspace and must not rely on hoisting.
+
+**Gotchas**
+- **`TRUNCATE` bypasses row-level triggers.** The spec's append-only triggers did not stop
+  `TRUNCATE entries`. → ADR-015. The test runs inside `BEGIN … ROLLBACK`, so a missing
+  trigger fails the test without wiping the ledger.
+- **ts-proto enum decoding:** binary `decode` stores an unknown enum value as the raw
+  number (e.g. `7`). Only `fromJSON` maps to `UNRECOGNIZED` (-1). Validation must reject
+  any value that is not exactly `DEBIT` or `CREDIT`, and the unit test decodes real bytes
+  `[0x10, 0x07]`.
+- **`npm install -w <new workspace> <deps>`** on a workspace that is not yet linked
+  installs the link but does **not** save the deps to its `package.json`. Run it twice,
+  and check the file afterwards.
+- **PowerShell `Set-Content -NoNewline` is unavailable in this harness.** Use
+  `[IO.File]::WriteAllText`.
+- **`SUM(bigint)` is `numeric`** in Postgres. Cast it `::text`, then BigInt.
+- **For M3: a ledger DB-trigger rejection surfaces as gRPC `INTERNAL`**, because
+  `instrument` maps unexpected errors to INTERNAL. `classify(…, 'ledger')` treats INTERNAL
+  as `UNKNOWN_OUTCOME`, so the Orchestrator would *retry* a journal the database will
+  never accept, then exhaust recovery into `NEEDS_MANUAL_REVIEW`. It only happens if app
+  validation has a bug, and the outcome (manual review) is safe. But M3 should decide
+  whether the Ledger maps Postgres `P0001` from its own triggers to
+  `FAILED_PRECONDITION` (classified `BUG`, so manual review immediately). That needs an
+  ADR, because the spec does not list the mapping.
+
+**Next action**
+- **M2 Mock Bank.** Read `ARCHITECTURE.md` §8, §10, §14. Mirror `services/ledger`
+  exactly: package and tsconfig pattern, root references, a Compose service per instance
+  (`bank-a`, `bank-b`, same image, `SERVICE=mockBank`), and
+  `tests/integration/mockBank.test.ts` with run-unique ids.
+
+**Open questions**
+- `ADR-010` (inline saga budget), still open for M3.
+- Ledger trigger error → gRPC status mapping (see gotchas), for M3.
