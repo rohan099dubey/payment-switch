@@ -11,7 +11,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | # | Milestone | Status | Read first (ARCHITECTURE.md §) | Completed | Commit |
 |---|---|---|---|---|---|
 | M0 | Scaffold | `DONE` | 2, 3, 9, 15, 17 | 2026-10-05 | see `git log --grep "M0"` |
-| M1 | Ledger | `NOT_STARTED` | 7, 10, 14 | — | — |
+| M1 | Ledger | `DONE` | 7, 10, 14 | 2026-10-05 | see `git log --grep "M1"` |
 | M2 | Mock Bank | `NOT_STARTED` | 8, 10, 14 | — | — |
 | M3 | Orchestrator core | `NOT_STARTED` | 6, 11, 13, 14 | — | — |
 | M4 | Gateway | `NOT_STARTED` | 5, 14 | — | — |
@@ -29,6 +29,7 @@ Most of the work is in **M3, M5 and M6**.
 | # | Question | Raised | Resolve by | Status |
 |---|---|---|---|---|
 | 1 | Inline saga budget (8000 ms) is smaller than the worst-case debit step (12000 ms), so `202` will be the common response under chaos. Tune the budget, reduce retry counts, or accept `202`? See `ADR-010`. | Session 0 | M3 | **OPEN** |
+| 2 | A Ledger DB-trigger rejection reaches the Orchestrator as `INTERNAL`, which `classify` reads as `UNKNOWN_OUTCOME` (retry), not `BUG`. Map Postgres `P0001` from the Ledger's own triggers to `FAILED_PRECONDITION`? Only reachable if app validation has a bug. See `SESSION_LOG.md`, M1 gotchas. | Session 1 (M1) | M3 | **OPEN** |
 
 ## M0 — Scaffold
 
@@ -85,30 +86,31 @@ Acceptance
 **Scope:** migrations, all five RPCs, validation, metrics, health. Leaf service.
 
 Implementation
-- [ ] `migrations/0001_init.sql` — accounts, journals, entries, append-only triggers, deferred balance constraint trigger
-- [ ] `migrations/0002_seed_accounts.sql` — the five chart-of-accounts rows
-- [ ] `PostJournal` with the full algorithm from spec §7
-- [ ] `GetJournal`
-- [ ] `ListJournals` (by `reference_id`, max 50, ordered by `created_at`)
-- [ ] `GetBalance` (derived, `REPEATABLE READ READ ONLY`)
-- [ ] `GetTrialBalance` (one `REPEATABLE READ READ ONLY` transaction)
-- [ ] `domain/validate.ts` and `domain/journalHash.ts`
-- [ ] `repo/journalRepo.ts` and `repo/balanceRepo.ts` — all SQL lives here
-- [ ] Metric `journals_posted_total{kind, replayed}`
-- [ ] `/healthz`, `/readyz`, `/metrics` on HTTP 9102
+- [x] `migrations/0001_init.sql` — accounts, journals, entries, append-only triggers, deferred balance constraint trigger
+- [x] `migrations/0002_seed_accounts.sql` — the five chart-of-accounts rows
+- [x] `PostJournal` with the full algorithm from spec §7
+- [x] `GetJournal`
+- [x] `ListJournals` (by `reference_id`, max 50, ordered by `created_at`)
+- [x] `GetBalance` (derived, `REPEATABLE READ READ ONLY`)
+- [x] `GetTrialBalance` (one `REPEATABLE READ READ ONLY` transaction)
+- [x] `domain/validate.ts` and `domain/journalHash.ts`
+- [x] `repo/journalRepo.ts` and `repo/balanceRepo.ts` — all SQL lives here
+- [x] Metric `journals_posted_total{kind, replayed}`
+- [x] `/healthz`, `/readyz`, `/metrics` on HTTP 9102
+- [x] (added) `0003_forbid_truncate.sql` — `ADR-015`
 
-Acceptance
-- [ ] A balanced journal posts successfully
-- [ ] An unbalanced journal is rejected by application validation (`INVALID_ARGUMENT` / `JOURNAL_INVALID`)
-- [ ] An unbalanced journal is rejected **by the database trigger** — a raw SQL insert bypassing the app fails
-- [ ] A duplicate `idempotency_key` with the same body replays (`replayed = true`, same journal)
-- [ ] The same key with a different body returns `ALREADY_EXISTS` / `IDEMPOTENCY_KEY_REUSED`
-- [ ] 100 concurrent calls with the same key create exactly one journal
-- [ ] `UPDATE` on `entries` fails
-- [ ] `DELETE` on `entries` fails
-- [ ] `UPDATE` / `DELETE` on `journals` fails
-- [ ] An unknown account code returns `NOT_FOUND` / `ACCOUNT_NOT_FOUND` and rolls back
-- [ ] `GetBalance` computes the normal-side balance correctly for both ASSET and LIABILITY
+Acceptance — `tests/integration/ledger.test.ts` (26 tests) + `services/ledger/test` (unit)
+- [x] A balanced journal posts successfully
+- [x] An unbalanced journal is rejected by application validation (`INVALID_ARGUMENT` / `JOURNAL_INVALID`)
+- [x] An unbalanced journal is rejected **by the database trigger** — a raw SQL insert bypassing the app fails
+- [x] A duplicate `idempotency_key` with the same body replays (`replayed = true`, same journal)
+- [x] The same key with a different body returns `ALREADY_EXISTS` / `IDEMPOTENCY_KEY_REUSED`
+- [x] 100 concurrent calls with the same key create exactly one journal
+- [x] `UPDATE` on `entries` fails
+- [x] `DELETE` on `entries` fails
+- [x] `UPDATE` / `DELETE` on `journals` fails
+- [x] An unknown account code returns `NOT_FOUND` / `ACCOUNT_NOT_FOUND` and rolls back
+- [x] `GetBalance` computes the normal-side balance correctly for both ASSET and LIABILITY
 
 ## M2 — Mock Bank
 

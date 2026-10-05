@@ -16,9 +16,9 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **M1 — Ledger** (not started). M0 is `DONE`. |
-| **Next action** | `migrations/0001_init.sql` (accounts, journals, entries, append-only + deferred balance triggers), then `0002_seed_accounts.sql`, then `PostJournal` |
-| **Read first for M1** | `ARCHITECTURE.md` sections 7, 10, 14 |
+| **Active milestone** | **M2 — Mock Bank** (not started). M0 and M1 are `DONE`. |
+| **Next action** | `services/mockBank/migrations/0001_init.sql`, then `Debit` with the atomic conditional `UPDATE`. Copy the `services/ledger` layout exactly. |
+| **Read first for M2** | `ARCHITECTURE.md` sections 8, 10, 14 |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
@@ -138,6 +138,8 @@ Computed against a baseline snapshot taken before each run.
 | `buf lint` STANDARD **except** 4 rules the verbatim protos/layout violate | `ADR-011` |
 | ts-proto plugin run as `['node', 'node_modules/ts-proto/protoc-gen-ts_proto']` (Windows) | `ADR-012` |
 | `test*` scripts use vitest **projects** (`unit`/`integration`/`chaos`), not `--dir` | `ADR-013` |
+| `schema_migrations` has an extra `checksum` column; pending files apply in **one** transaction | `ADR-014` |
+| Ledger migration `0003_forbid_truncate.sql` (statement-level `BEFORE TRUNCATE` triggers) | `ADR-015` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
 
