@@ -1,0 +1,16 @@
+# The build stage runs `npm ci`, `buf generate` and `tsc -b` itself; never copy host
+# artifacts in (host node_modules may hold Windows binaries).
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+packages/proto-gen/src
+coverage
+*.log
+.env
+.env.local
+.git
+.claude
+.github
+docs
+load

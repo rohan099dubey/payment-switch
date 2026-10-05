@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+packages/proto-gen/src/
+package-lock.json
+
+# Prose is hand-formatted, and ARCHITECTURE.md is never edited in place. Prettier would
+# rewrap and re-pad every table in the docs.
+*.md
+*.mmd
+
+# Not supported by prettier
+*.proto
+*.sql
+*.lua
+Dockerfile

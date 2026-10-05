@@ -1,0 +1,4 @@
+{
+  "files": [],
+  "references": [{ "path": "packages/proto-gen" }, { "path": "packages/common" }, { "path": "packages/common/test" }]
+}

@@ -16,9 +16,9 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **M0 — Scaffold** (not started) |
-| **Next action** | npm workspaces, `tsconfig.base.json`, eslint/prettier, buf config, the three `.proto` files, `@switch/common`, Dockerfile, Compose (3x Postgres + Redis), CI `static` job |
-| **Read first for M0** | `ARCHITECTURE.md` sections 2, 3, 9, 15, 17 |
+| **Active milestone** | **M1 — Ledger** (not started). M0 is `DONE`. |
+| **Next action** | `migrations/0001_init.sql` (accounts, journals, entries, append-only + deferred balance triggers), then `0002_seed_accounts.sql`, then `PostJournal` |
+| **Read first for M1** | `ARCHITECTURE.md` sections 7, 10, 14 |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
@@ -128,8 +128,17 @@ Computed against a baseline snapshot taken before each run.
 |---|---|
 | **Node 22 LTS**, not Node 20 (20 reached EOL April 2026) | `ADR-009` |
 | **Fastify 5** + `@fastify/jwt` v9, not Fastify 4 | `ADR-009` |
+| `buf lint` STANDARD **except** 4 rules the verbatim protos/layout violate | `ADR-011` |
+| ts-proto plugin run as `['node', 'node_modules/ts-proto/protoc-gen-ts_proto']` (Windows) | `ADR-012` |
+| `test*` scripts use vitest **projects** (`unit`/`integration`/`chaos`), not `--dir` | `ADR-013` |
 
-PostgreSQL stays at 16. Everything else is verbatim per spec. The dev machine runs Node
+PostgreSQL stays at 16. Everything else is verbatim per spec.
+
+**Shape notes for later milestones** (not deviations, just how `@switch/common` landed):
+`instrument` comes from `createInstrument({ logger, registry })`; `withRetry` requires a
+`shouldRetry` predicate (no default, so a definite failure can never be retried by
+accident); `withRetry`'s `attempts` is the **total** count, so `INLINE_BANK_RETRIES=2`
+means `attempts: 3`; generated code is imported as `@switch/proto-gen/bank/v1` (etc.). The dev machine runs Node
 v24, which is forward-compatible with the ES2022/CommonJS target; Docker and CI pin
 `node:22-alpine`, and `.nvmrc` records 22.
 

@@ -1,0 +1,55 @@
+# ARCHITECTURE.md section 17. M0 adds the `static` job; `integration` and `nightly`
+# arrive in M9, once there is a stack to run them against.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: buf lint
+        run: npx buf lint
+
+      # Only on pull requests, and only once main has protos to compare against
+      # (the PR that introduces proto/ has nothing to break).
+      - name: buf breaking
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin main:main
+          if git ls-tree -d main proto >/dev/null 2>&1 && [ -n "$(git ls-tree -d main proto)" ]; then
+            npx buf breaking --against '.git#branch=main'
+          else
+            echo "main has no proto/ directory yet; skipping buf breaking"
+          fi
+
+      # Generated code must exist before type-aware lint can resolve imports from it.
+      - run: npm run proto:gen
+
+      - run: npm run lint
+
+      - run: npm run build
+
+      - run: npm test

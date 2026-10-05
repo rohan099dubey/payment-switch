@@ -1,0 +1,73 @@
+# Infrastructure for the payment switch (ARCHITECTURE.md section 15).
+# M0 defines the four data stores. Each service is added in the milestone that builds it:
+# ledger (M1), bank-a / bank-b (M2), orchestrator (M3), gateway (M4).
+#
+# Postgres healthchecks use -h 127.0.0.1 on purpose: during first-start initialisation the
+# entrypoint runs a temporary server on the unix socket only, so a TCP check cannot report
+# healthy until init scripts (initBankDbs.sql) have finished.
+
+name: payment-switch
+
+services:
+  postgres-orchestrator:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: orch
+      POSTGRES_PASSWORD: orch
+      POSTGRES_DB: orchestrator_db
+    ports:
+      - '5433:5432'
+    volumes:
+      - orchestrator-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-h', '127.0.0.1', '-U', 'orch', '-d', 'orchestrator_db']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-ledger:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ledger
+      POSTGRES_PASSWORD: ledger
+      POSTGRES_DB: ledger_db
+    ports:
+      - '5434:5432'
+    volumes:
+      - ledger-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-h', '127.0.0.1', '-U', 'ledger', '-d', 'ledger_db']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-banks:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: banks
+      POSTGRES_PASSWORD: banks
+    ports:
+      - '5435:5432'
+    volumes:
+      - banks-data:/var/lib/postgresql/data
+      - ./scripts/initBankDbs.sql:/docker-entrypoint-initdb.d/initBankDbs.sql:ro
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-h', '127.0.0.1', '-U', 'banks', '-d', 'bank_b']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  orchestrator-data:
+  ledger-data:
+  banks-data:

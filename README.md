@@ -90,6 +90,9 @@ with the machine and commit that produced it, and with the invariants green afte
 | [008](docs/decisions/ADR-008-recovery-by-lease-and-skip-locked.md) | Recovery by lease and `SKIP LOCKED`, not a message queue |
 | [009](docs/decisions/ADR-009-node-22-fastify-5.md) | Node 22 LTS and Fastify 5 (deviation from the spec) |
 | [010](docs/decisions/ADR-010-inline-saga-budget.md) | Inline saga budget vs. the `202` path — **open** |
+| [011](docs/decisions/ADR-011-buf-lint-exceptions.md) | Four `buf lint` exceptions for the verbatim contracts (deviation) |
+| [012](docs/decisions/ADR-012-ts-proto-plugin-invocation.md) | Run the ts-proto plugin through `node` (deviation) |
+| [013](docs/decisions/ADR-013-vitest-projects.md) | Test layers as vitest projects (deviation) |
 
 ## 8. What I built and why
 

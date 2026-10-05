@@ -12,12 +12,20 @@
 Dockerfile text eol=lf
 .env.example text eol=lf
 
-# Keep diffs readable
+# Source and config: built inside Linux containers too, and Prettier enforces
+# `endOfLine: lf`, so a CRLF checkout would fail `npm run lint` on a fresh Windows clone.
+*.ts       text eol=lf
+*.mts      text eol=lf
+*.js       text eol=lf
+*.mjs      text eol=lf
+*.json     text eol=lf
+.prettierrc.json text eol=lf
+.prettierignore  text eol=lf
+.dockerignore    text eol=lf
+
+# Prose: Prettier ignores these, so native line endings are fine
 *.md       text
 *.mmd      text
-*.ts       text
-*.js       text
-*.json     text
 
 # Generated — do not show in diffs
 package-lock.json -diff linguist-generated

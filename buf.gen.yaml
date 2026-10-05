@@ -1,0 +1,15 @@
+version: v2
+plugins:
+  # Spec section 2 says `local: node_modules/.bin/protoc-gen-ts_proto`. That shim is a
+  # shell script on Linux but a .cmd on Windows, which cmd.exe cannot run from a
+  # forward-slash path. Invoking the same file through node works everywhere. ADR-012.
+  - local: ['node', 'node_modules/ts-proto/protoc-gen-ts_proto']
+    out: packages/proto-gen/src
+    opt:
+      - outputServices=grpc-js
+      - esModuleInterop=true
+      - forceLong=string
+      - useDate=true
+      - env=node
+      - useOptionals=messages
+      - exportCommonSymbols=false

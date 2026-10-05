@@ -1,0 +1,28 @@
+{
+  "name": "@switch/proto-gen",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeScript generated from proto/ by `npm run proto:gen`. src/ is gitignored.",
+  "exports": {
+    "./bank/v1": "./dist/bank/v1/bank.js",
+    "./ledger/v1": "./dist/ledger/v1/ledger.js",
+    "./orchestrator/v1": "./dist/orchestrator/v1/orchestrator.js"
+  },
+  "typesVersions": {
+    "*": {
+      "bank/v1": [
+        "dist/bank/v1/bank.d.ts"
+      ],
+      "ledger/v1": [
+        "dist/ledger/v1/ledger.d.ts"
+      ],
+      "orchestrator/v1": [
+        "dist/orchestrator/v1/orchestrator.d.ts"
+      ]
+    }
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.16.0",
+    "@grpc/grpc-js": "1.14.5"
+  }
+}
