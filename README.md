@@ -95,6 +95,7 @@ with the machine and commit that produced it, and with the invariants green afte
 | [013](docs/decisions/ADR-013-vitest-projects.md) | Test layers as vitest projects (deviation) |
 | [014](docs/decisions/ADR-014-migration-checksums.md) | Migration checksums, one transaction per batch (deviation) |
 | [015](docs/decisions/ADR-015-ledger-forbid-truncate.md) | The ledger also forbids `TRUNCATE` (deviation) |
+| [016](docs/decisions/ADR-016-mock-bank-unspecified-details.md) | Mock Bank details the spec leaves open |
 
 ## 8. What I built and why
 
@@ -114,6 +115,13 @@ looking — that is what makes the project safe to put on a resume.)*
 3. The ledger is append-only in the database itself. Triggers reject UPDATE, DELETE and (beyond the spec, ADR-015) TRUNCATE, so history can't be rewritten even with raw SQL.
 4. Idempotency comes from a unique key plus `ON CONFLICT DO NOTHING`, with no application locks. 100 concurrent identical posts produce one journal and 99 replays.
 5. A reused key with a different body is rejected using a hash of the canonical request, so a retry can never silently post different amounts.
+
+**M2 — Mock Bank**
+1. A simulated external bank, run as two instances with separate databases. Every money operation is idempotent by `(reference_id, operation)`, the table's primary key.
+2. Double-spend is impossible: the balance check and the decrement are one conditional `UPDATE`. 50 concurrent debits against funds for 10 yield exactly 10.
+3. `Resolve` turns "did it happen?" into a permanent answer by inserting a tombstone. A late debit that arrives after it fails with `REFERENCE_VOIDED`, so money can never move after the switch gave up on it.
+4. That race is tested for real: Debit and Resolve fire together on separate connections, each side wins sometimes, and every pair gets one consistent answer.
+5. A seeded chaos engine (mulberry32) injects outages, rejections, late applies and lost responses. The same seed gives the same failures, so chaos bugs can be reproduced.
 
 ---
 

@@ -6,6 +6,8 @@
     { "path": "packages/common/test" },
     { "path": "services/ledger" },
     { "path": "services/ledger/test" },
+    { "path": "services/mockBank" },
+    { "path": "services/mockBank/test" },
     { "path": "tests" }
   ]
 }

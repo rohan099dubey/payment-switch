@@ -1,0 +1,15 @@
+{
+  "name": "@switch/mock-bank",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Simulated external bank with Resolve tombstones and a seeded chaos engine. Runs as bank-a and bank-b.",
+  "main": "dist/main.js",
+  "dependencies": {
+    "@grpc/grpc-js": "1.14.5",
+    "@switch/common": "0.0.0",
+    "@switch/proto-gen": "0.0.0",
+    "pg": "8.23.1",
+    "prom-client": "15.1.3",
+    "zod": "4.6.5"
+  }
+}

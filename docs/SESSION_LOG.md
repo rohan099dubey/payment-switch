@@ -302,3 +302,88 @@ and rebuilt.
 **Open questions**
 - `ADR-010` (inline saga budget), still open for M3.
 - Ledger trigger error → gRPC status mapping (see gotchas), for M3.
+
+---
+
+## 2026-10-05 — Session 1 (continued) — M2 Mock Bank
+
+**Status at end:** M2 `DONE`, all boxes ticked. Same session again, at the owner's request.
+
+**Done**
+- `services/mockBank` (`@switch/mock-bank`): `main.ts`, `config.ts`, `metrics.ts`,
+  `grpc/{server,handlers}.ts`, `chaos/{chaos,prng}.ts`,
+  `repo/{accountsRepo,operationsRepo}.ts`, and `migrations/0001_init.sql` (verbatim).
+- `bank-a` and `bank-b` in Compose: the same Dockerfile (`SERVICE=mockBank`), chaos env
+  shared through a YAML anchor, and one database each on `postgres-banks`.
+- Unit tests: `test/chaos/{prng,chaos}.test.ts`, `test/config.test.ts`.
+- Integration tests: `tests/integration/mockBank.test.ts`, 33 tests.
+- ADR-016 covers what §8 leaves open.
+
+**Verification**
+```text
+npm test                     -> Tests 142 passed (unit, all packages)
+npm run stack:up             -> 7/7 healthy (4 infra + ledger + bank-a + bank-b)
+bank-a / bank-b first start  -> each: migrations applied 0001_init.sql (own DB)
+mockBank integration         -> Tests 33 passed (33), ~9.7 s (late/lost tests wait out slow_ms)
+docker compose stop bank-a   -> "mock bank shutting down" / "stopped", exit code 0
+```
+
+**The race test was one-sided at first, and measuring caught it.** The first version
+fired Debit and Resolve together on one gRPC channel. A probe script showed **Debit
+won 200 of 200**: HTTP/2 on one connection delivers in send order. So the "tombstone
+wins" branch was never exercised, and the test proved nothing beyond "committed Debit
+beats Resolve". The fix uses a second channel and alternates the send order. Measured
+split: debit-first 96/4, resolve-first 22/78, 0 inconsistent of 200. The test now
+**asserts both branches occurred**. That assertion then failed once more for a second
+reason: a *cold* second channel pays connection setup, so its calls always arrive late.
+Warming it with one call fixed it, and it passed 5 of 5 runs.
+
+**Mutation check.** A mutant bank ran on ports 50161/9211 against `bank_a`, with the suite
+pointed at it through `BANK_A_GRPC_ADDR` / `BANK_A_HTTP_URL`:
+1. `balance >= $2` removed from the Debit UPDATE → "insufficient funds" and "50
+   concurrent debits" failed.
+2. The Debit conflict branch ignores `VOIDED` → "tombstone beats Debit", "…beats
+   Credit" and **the race test** failed. The one-sided race test could not have caught this.
+3. `ChaosEngine.replace` stops reseeding → the same-seed determinism test failed.
+
+Total: 6 failed, 27 passed. The files were restored hash-identical.
+
+**Decisions** (details in ADR-016)
+- Four added error codes: `INVALID_REQUEST`, `ACCOUNT_ALREADY_EXISTS`,
+  `CHAOS_CONFIG_INVALID`, `BANK_UNAVAILABLE`.
+- On a replay, `balance_after` is the balance at replay time; the schema does not
+  store the original.
+- Credit can return `CURRENCY_MISMATCH` (§14's failure table wins over §8's "only").
+- `SetChaosConfig` enforces `slow_ms > BANK_CALL_TIMEOUT_MS` only when late or lost
+  modes are on.
+- Two PRNG streams (mode, latency); `down` draws nothing; `replace` reseeds.
+- **BANK_ID, ports and DATABASE_URL are required** (no defaults), because the spec's
+  values are per instance.
+- **The repo returns outcomes, handlers throw.** Business rejections throw a private
+  `Rejection` *inside* the transaction purely to roll back the operation row ("business
+  rejections are not recorded"), and are converted to an outcome outside.
+- **Registry default label `bank_id`**, so both instances' metrics are distinguishable
+  once scraped together.
+
+**Gotchas**
+- **One gRPC channel serialises "concurrent" calls in send order.** To create real
+  races at the database, use separate channels **and warm them first**. M5's
+  concurrency tests (50 identical transfer requests) must remember this.
+- **Float threshold sums:** `0.1 + 0.2 = 0.30000000000000004`, so a draw of exactly
+  0.3 falls in late_apply, not lost_response. That is harmless, but tests must probe
+  just off boundaries, and rate-sum validation needs an epsilon.
+- **Chaos config is in memory per instance** (by design). Every integration test resets
+  it in `afterEach` to the config read at startup, so a failing chaos test cannot leak
+  `down: true` into the next one.
+- **Integration suite timing:** the late-apply and lost-response tests each wait out
+  `slow_ms` (2.1 s). Keep the number of such tests small.
+
+**Next action**
+- **M3 Orchestrator core.** Read §6, §11, §13, §14. **First decide the two open
+  questions** in `PROGRESS.md` (ADR-010 budget; ledger trigger → gRPC status), because
+  M3's integration tests depend on both. Then the `services/ledger` and
+  `services/mockBank` layout again.
+
+**Open questions**
+- `ADR-010` (inline saga budget): M3.
+- Ledger trigger error mapping: M3.
