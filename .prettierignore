@@ -1,3 +1,5 @@
+# Claude Code session worktrees live under .claude/ inside the repo folder; never scan them.
+.claude/
 node_modules/
 dist/
 coverage/

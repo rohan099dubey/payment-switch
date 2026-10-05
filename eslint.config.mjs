@@ -4,7 +4,8 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['**/node_modules/**', '**/dist/**', 'packages/proto-gen/src/**', 'coverage/**'],
+    // .claude/ holds Claude Code session worktrees (full repo copies) inside the repo folder.
+    ignores: ['.claude/**', '**/node_modules/**', '**/dist/**', 'packages/proto-gen/src/**', 'coverage/**'],
   },
   eslint.configs.recommended,
   {
