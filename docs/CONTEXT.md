@@ -23,6 +23,13 @@ crashes mid-transfer.
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
 
+**Branch and merge policy** (the owner delegated merge decisions to Claude on 2026-10-05):
+work on the session's branch. Merge into `main` only when the milestone is `DONE`: every
+box ticked, and `lint`, `typecheck`, `test` and the acceptance commands green. Merge
+fast-forward only (`git merge --ff-only`). If that is impossible, rebase onto `main`,
+re-run the checks, then merge. Never merge a half-finished milestone. There is no git
+remote yet, so nothing is pushed.
+
 ## Services
 
 Four deployable services. Never merged, never sharing a database. Only the Gateway
