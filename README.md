@@ -130,6 +130,13 @@ looking — that is what makes the project safe to put on a resume.)*
 4. The inline time budget is a hard bound (ADR-010): every call's deadline is clipped to the time left, so the Orchestrator always answers before the Gateway gives up. When the budget runs out the transfer is handed to recovery (`202`), never failed.
 5. Ledger database-trigger rejections now come back as `FAILED_PRECONDITION`, not `INTERNAL` (ADR-017). A bug the database catches goes straight to manual review instead of being retried for minutes.
 
+**M4 — Gateway**
+1. The Gateway is the only HTTP entry point and has no transfer logic: it authenticates, rate-limits, validates with strict zod schemas, and translates REST to gRPC and back.
+2. The `client_id` always comes from the signed JWT's `sub`, never from the body or a header. Tokens are HS256 only, and a client removed from config is locked out immediately, not when its token expires.
+3. Rate limiting is a token bucket in Redis, run atomically as a Lua script with `EVALSHA` and Redis's own clock. If Redis is down the limiter fails open (ADR-006), because a load control must never stop payments.
+4. Status codes carry meaning a client can act on. 201 is a new success and 200 a replay of one, 422 is a business failure, and 202 plus `Location` means "still in flight, poll". Each gRPC error maps to exactly one HTTP error.
+5. Security-relevant details are pinned by tests: secrets are compared in constant time, nothing secret is ever logged, and a vulnerable JWT library was replaced (ADR-019). A test caught tokens that would have lived 10 days instead of 15 minutes.
+
 ---
 
 ## Using the API: idempotency rules for clients

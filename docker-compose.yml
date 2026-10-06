@@ -188,6 +188,42 @@ services:
       timeout: 3s
       retries: 10
 
+  # The only public entry point. JWT_SECRET and API_CLIENTS here are development
+  # values for the local stack only; a real deployment injects its own.
+  gateway:
+    build:
+      context: .
+      args:
+        SERVICE: gateway
+    environment:
+      LOG_LEVEL: info
+      HTTP_PORT: '8080'
+      JWT_SECRET: dev-only-jwt-secret-change-me-0123456789abcdef
+      JWT_TTL_SECONDS: '900'
+      API_CLIENTS: >-
+        [{"client_id":"demo-client","client_secret":"demo-secret"},
+        {"client_id":"test-client-a","client_secret":"test-secret-a-dev-only"},
+        {"client_id":"test-client-b","client_secret":"test-secret-b-dev-only"},
+        {"client_id":"test-ratelimit","client_secret":"test-secret-rl-dev-only"}]
+      REDIS_URL: redis://redis:6379
+      RATE_LIMIT_RPS: '100'
+      RATE_LIMIT_BURST: '200'
+      ORCHESTRATOR_ADDR: orchestrator:50051
+      ORCHESTRATOR_TIMEOUT_MS: '10000'
+      MAX_TRANSFER_AMOUNT: '10000000'
+    ports:
+      - '8080:8080'
+    depends_on:
+      redis:
+        condition: service_healthy
+      orchestrator:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/readyz']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   orchestrator-data:
   ledger-data:
