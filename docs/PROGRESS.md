@@ -15,7 +15,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M2 | Mock Bank | `DONE` | 8, 10, 14 | 2026-10-05 | see `git log --grep "M2"` |
 | M3 | Orchestrator core | `DONE` | 6, 11, 13, 14 | 2026-10-06 | see `git log --grep "M3"` |
 | M4 | Gateway | `DONE` | 5, 14 | 2026-10-06 | see `git log --grep "M4"` |
-| M5 | Idempotency & unknown outcomes | `NOT_STARTED` | 6, 12 | — | — |
+| M5 | Idempotency & unknown outcomes | `DONE` | 6, 12 | 2026-10-06 | see `git log --grep "M5"` |
 | M6 | Recovery | `NOT_STARTED` | 6, 13 | — | — |
 | M7 | Chaos & invariants | `NOT_STARTED` | 16 | — | — |
 | M8 | Load & metrics | `NOT_STARTED` | 16, 17 | — | — |
@@ -210,18 +210,18 @@ Acceptance — `tests/integration/{happyPath,validation,gateway}.test.ts` (9 + 1
 
 **Scope:** replay and conflict handling, concurrent duplicates, inline retries, `yield`.
 
-- [ ] `request_hash` over canonical JSON, compared on every duplicate key
-- [ ] Replay polls the row every 100 ms up to `REPLAY_WAIT_MS` while non-terminal
-- [ ] A replay never drives the saga
-- [ ] Inline retries for `UNKNOWN_OUTCOME` only, via `withRetry`
-- [ ] `yield()` increments `attempts`, sets `next_attempt_at`, releases the lease
+- [x] `request_hash` over canonical JSON, compared on every duplicate key
+- [x] Replay polls the row every 100 ms up to `REPLAY_WAIT_MS` while non-terminal
+- [x] A replay never drives the saga
+- [x] Inline retries for `UNKNOWN_OUTCOME` only, via `withRetry`
+- [x] `yield()` increments `attempts`, sets `next_attempt_at`, releases the lease
 
-Acceptance
-- [ ] Replay returns the same id with header `Idempotent-Replay: true`
-- [ ] A different body with the same key returns 409 `IDEMPOTENCY_KEY_REUSED`
-- [ ] 50 concurrent identical requests produce exactly one transfer and one bank debit
-- [ ] Two different clients using the same key string do not collide
-- [ ] `lost_response_rate = 1` still ends in `SUCCESS` with exactly one debit — **needs recovery: verify and tick in the M6 session, not M5** (`ADR-010`)
+Acceptance — `tests/integration/idempotency.test.ts` (14; a mutation run with 6 isolated planted bugs caught all 6)
+- [x] Replay returns the same id with header `Idempotent-Replay: true`
+- [x] A different body with the same key returns 409 `IDEMPOTENCY_KEY_REUSED`
+- [x] 50 concurrent identical requests produce exactly one transfer and one bank debit
+- [x] Two different clients using the same key string do not collide
+- Moved to M6: `lost_response_rate = 1` still ends in `SUCCESS` with exactly one debit. It cannot pass without the recovery worker (`ADR-010`, amendment of M5).
 
 ## M6 — Recovery
 
@@ -247,6 +247,8 @@ Acceptance — `failurePaths` integration tests
 - [ ] An Orchestrator kill mid-transfer is recovered by another instance after lease expiry
 - [ ] Insufficient funds still gives `FAILED`
 - [ ] A missing payee still gives `REVERSED` with the payer refunded
+- [ ] (moved from M5, `ADR-010`) `lost_response_rate = 1` still ends in `SUCCESS` with exactly one debit
+- [ ] (from M4/M5) the `DEBIT_SENT` transfers left by the 202 tests (payer bank `down`) are finished by recovery
 
 ## M7 — Chaos & invariants
 

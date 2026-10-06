@@ -16,9 +16,9 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **M5 — Idempotency & unknown outcomes** (not started). M0–M4 are `DONE`. |
-| **Next action** | Verify what M3 already built (request hash, replay polling, inline retries, `yield`) with M5's acceptance tests through the Gateway: start with "50 concurrent identical requests" (separate warmed connections, M2 gotcha). Leave the `lost_response_rate = 1` box for M6 (ADR-010) |
-| **Read first for M5** | `ARCHITECTURE.md` sections 6, 12 |
+| **Active milestone** | **M6 — Recovery** (not started). M0–M5 are `DONE`. |
+| **Next action** | `services/orchestrator/src/recovery/worker.ts`: the claim loop with `claimDue` (already in `repo/transfersRepo.ts`, verbatim §13), then `Resolve` for `*_SENT` at `attempts >= 3`. `SagaEngine.advance` already accepts `mode: 'recovery'` |
+| **Read first for M6** | `ARCHITECTURE.md` sections 6, 13 |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
@@ -164,8 +164,9 @@ from that resolution shape every later milestone:
 - **`202` is a normal outcome.** Integration tests pass the `CreateTransfer` response to
   `awaitTerminal` (`tests/helpers/transfers.ts`), which polls `GetTransfer`. Before M6 a
   yielded transfer never progresses, so with chaos off a yield fails the test.
-- **M5's `lost_response_rate = 1` box can only pass once the M6 recovery worker exists.**
-  Verify and tick it in the M6 session.
+- **The `lost_response_rate = 1` criterion is now an M6 acceptance box** (moved from M5,
+  ADR-010 amendment). M6 also has to finish the `DEBIT_SENT` transfers that the 202 tests
+  leave behind (payer bank `down`, nothing debited).
 
 **Shape notes from M3:** `SagaEngine.advance(transfer, {mode, deadline?, leaseOwner,
 requestId?})` already handles inline retries and `yield` (section 6 pseudocode), so M5

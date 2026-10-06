@@ -580,3 +580,75 @@ npm audit             -> found 0 vulnerabilities (after the @fastify/jwt 10 swit
 
 **Open questions**
 - None.
+
+---
+
+## 2026-10-06 — Session 2 (continued) — M5 Idempotency & unknown outcomes
+
+**Status at end:** M5 `DONE`, all 9 boxes ticked. One box (`lost_response_rate = 1`) was
+**moved to M6**, not left open (below). Same session, after the owner's "continue".
+
+**Done**
+- No production code changed. M3 had already built every M5 mechanism (§6 pseudocode).
+  M5 proves them against the real stack in `tests/integration/idempotency.test.ts` (14
+  tests):
+  - fingerprint: a different amount, note or payee with the same key gets 409 and
+    leaves the transfer untouched; an absent note and `""` are the same fingerprint;
+  - 50 concurrent identical requests over warmed, separate connections: one 201, 49
+    replays with status 200, one row, one `APPLIED` debit row at the bank, exactly one
+    `Debit ok` in the Orchestrator's own `downstream_calls_total`, and one linear event
+    trail;
+  - 10 concurrent requests with one key and different amounts: one 201, nine 409s;
+  - a replay while in flight (bank latency chaos): it returns as soon as the original
+    lands (200), or after `REPLAY_WAIT_MS` with 202 PENDING plus `Location`, and a later
+    replay is 200 SUCCEEDED (rule 3's 202 → 200);
+  - a replay never drives: a yielded transfer, replayed after the bank is back up, gets
+    no event carrying the replay's request id;
+  - inline retries: a seeded `reject_rate` gives one `unknown` and then one `ok` Debit;
+    a definite failure makes exactly one Debit call; bank `down` makes exactly 3 Debit
+    attempts, then a yield (`attempts` 1, `next_attempt_at - updated_at` within 2000–2400 ms,
+    lease cleared).
+- `tests/tsconfig.json` now references `services/mockBank` too. The test imports the
+  bank's own `mulberry32` to choose a seed (reject, then pass) instead of copying the PRNG.
+
+**Verification**
+```text
+idempotency.test.ts   -> Tests 14 passed (14), 4 runs in a row (timing-sensitive tests are stable)
+npm run lint          -> clean; npm run typecheck -> exit 0
+npm test              -> Test Files 26 passed (26) / Tests 538 passed (538)
+npm run stack:up      -> 9/9 healthy
+npm run test:integration -> Test Files 8 passed (8) / Tests 147 passed (147), ~41 s
+```
+
+**Mutation check** (`.mutant/run.sh`: each mutant gets its own Orchestrator on 50151
+behind an unmodified local Gateway on 8180). Every mutant was caught:
+M1 fingerprint never compared → 4 failed; M2 replay does not wait → 3; M3 replay
+leases and drives → 1 (the request-id test); M4 no inline bank retries → 2; M5 yield
+keeps the lease → 1; M6 no `ON CONFLICT` → 10.
+
+**Decisions**
+- **The `lost_response_rate = 1` box moved from M5 to M6** (ADR-010 amendment). It needs
+  the recovery worker, and §16 lists it under `failurePaths`. Leaving it unticked in M5
+  would have meant either a half-done milestone, which the merge policy forbids, or a
+  premature tick. M6 also gained an added box: recovery must finish the `DEBIT_SENT`
+  transfers the 202 tests leave behind.
+- **"Never drives" is checked through `transfer_events.detail.request_id`**, not through
+  the state. After M6, recovery may legitimately advance that transfer during the
+  replay's wait, so a state assertion would become flaky. The request-id assertion stays
+  true. M3's mutant (a replay that drives) proves the assertion can fail.
+
+**Gotchas**
+- **The whole Compose stack had exited (code 0) between M4 and M5**, after Docker
+  restarted. The first M5 run failed with `ECONNREFUSED 127.0.0.1:50061` before any
+  assertion. Run `npm run stack:up` first and check with `docker compose ps -a`.
+- The mutation driver's output cuts test titles at "> ", so "(202 -> 200)" printed as
+  "200)". That is cosmetic.
+
+**Next action**
+- **M6 Recovery.** Read §6 and §13. `claimDue`, `acquireLease`, `yieldTransfer` and
+  `advance(…, {mode: 'recovery'})` already exist. Build `recovery/worker.ts`, the `Resolve`
+  path, `MAX_RECOVERY_ATTEMPTS`, the `transfers_in_flight` gauge and `recovery_runs_total`,
+  then the `failurePaths` tests, including the box moved from M5.
+
+**Open questions**
+- None.
