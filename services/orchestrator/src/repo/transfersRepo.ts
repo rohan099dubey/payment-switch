@@ -314,3 +314,8 @@ export function createRecoveryStore(pool: Pool): RecoveryStore {
     countInFlight: () => countInFlight(pool),
   };
 }
+
+/** Readiness probe for `/readyz`: resolves once the database answers a trivial query. */
+export async function ping(pool: Pool): Promise<void> {
+  await pool.query('SELECT 1');
+}

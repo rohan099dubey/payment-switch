@@ -46,3 +46,13 @@ throughput scales with Postgres rather than with lock contention on `transit`.
   phase 1 has no premature optimisation to defend.
 - **A materialized view.** Needs refreshing, and a stale refresh would break the
   invariant checks that are the whole point of the project.
+
+## As built (checked in M9, 2026-10-07)
+
+- `accounts` has no balance column; `GetBalance` and `GetTrialBalance` aggregate
+  `entries` in `services/ledger/src/repo/balanceRepo.ts`.
+- Extended by ADR-015 (`TRUNCATE` is forbidden too) and ADR-017 (the Ledger's own trigger
+  rejections are reported as `FAILED_PRECONDITION`).
+- Proven by `tests/integration/ledger.test.ts` (normal-side balances for ASSET and
+  LIABILITY; `UPDATE`/`DELETE` rejected; an unbalanced journal rejected by the trigger
+  even through raw SQL).

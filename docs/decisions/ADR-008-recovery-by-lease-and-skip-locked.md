@@ -64,3 +64,15 @@ both believe they know what is pending.
 - **`pg_notify` / `LISTEN` instead of polling.** No durability — a notification sent
   while an instance is down is simply lost, which is exactly the case recovery exists
   for.
+
+## As built (checked in M9, 2026-10-07)
+
+- `services/orchestrator/src/recovery/worker.ts` and `repo/transfersRepo.ts`
+  (`claimDue`). Refinements in ADR-020: the claim query takes one lease token per batch
+  (`{INSTANCE_ID}:recovery:{uuid}`), and each row is still leased separately; the lease
+  is renewed before each transfer is driven, and a transfer whose lease has lapsed is
+  skipped. ADR-018: the compare-and-set also matches `state`.
+- Proven by `tests/integration/failurePaths.test.ts` (a SIGKILLed Orchestrator's
+  transfer is finished by a second instance, only after the lease expired),
+  `tests/chaos/crashRecovery.test.ts` (200 in-flight transfers) and
+  `services/orchestrator/test/recovery/worker.test.ts`.

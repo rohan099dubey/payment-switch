@@ -10,7 +10,7 @@ import { startGrpcServer } from './grpc/server';
 import { SagaEngine, type SagaDeps } from './domain/saga';
 import { createOrchestratorMetrics, recoveryObserver, sagaObserver } from './metrics';
 import { RecoveryWorker } from './recovery/worker';
-import { createRecoveryStore, createTransferStore } from './repo/transfersRepo';
+import { createRecoveryStore, createTransferStore, ping } from './repo/transfersRepo';
 
 /** Section 6, Shutdown: wait up to 10 seconds for inline sagas. */
 const SHUTDOWN_GRACE_MS = 10_000;
@@ -58,7 +58,7 @@ async function main(): Promise<void> {
     registry,
     logger,
     ready: async () => {
-      await pool.query('SELECT 1');
+      await ping(pool);
       return true;
     },
   });

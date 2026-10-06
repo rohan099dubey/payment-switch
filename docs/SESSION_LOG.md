@@ -943,3 +943,86 @@ npm run test:integration -> Test Files 10 passed (10) / Tests 179 passed (179), 
 
 **Next action**
 - **M9 Polish**, in a fresh session (the owner asked for one). Read §17 and §20.
+
+---
+
+## 2026-10-07 — Session 3 — M9 Polish
+
+**Status at end:** M9 `DONE`, all 7 boxes ticked (6 from the spec plus the audit finding).
+Definition of done: 6 of 8 ticked; 2 open, and neither can be checked from this machine.
+
+**Done**
+- README: the 8 sections in §17 order. The quick start's curl output was captured from
+  the live stack (201, 200 replay, 409, 422 reversal). §5 lists every scenario with the
+  test that exercises it. §6 is copied from `docs/benchmarks.md`, checked by a script that
+  looked up every number. §7 covers ADRs 001–023. M9's five lines were added. The M8 line
+  said "p95 96 ms" and "about 130/s"; it now gives the exact 95.7 ms and 129.7/s (no
+  rounding, per the forbidden list).
+- Five PNGs in `docs/diagrams/` (mermaid-cli 12.0.0 via `npx`, local Chrome, ADR-023 has
+  the command). `*.png binary` added to `.gitattributes`.
+- `.github/workflows/ci.yml`: `integration` (push/PR) and `nightly` (schedule +
+  `workflow_dispatch`, two seeds + unscoped invariants) jobs. actionlint: 0 errors.
+- ADRs 001–008 were already complete pages. Each gained an "As built" section. ADR-023
+  records this milestone's choices.
+- Audit finding fixed: `ping(pool)` in `balanceRepo.ts`, `accountsRepo.ts` and
+  `transfersRepo.ts`; no `.query(` remains outside `repo/` in any service's `src/`.
+
+**Results (measured, this session, final code)**
+```text
+npm run lint / typecheck -> clean / exit 0
+npm test                 -> Test Files 29 passed (29) / Tests 599 passed (599)
+npm run stack:up         -> 9/9 healthy; every /readyz 200 (8080, 9101, 9102, 9111, 9112)
+npm run test:integration -> Test Files 10 passed (10) / Tests 179 passed (179), 225 s
+invariants --since 2026-10-06T21:29:00Z (after integration) -> 65 transfers, all hold
+TRANSFER_COUNT=10000 TEST_SEED=1 test:chaos -> 2/2; 10,486 requests, 520 ghosts,
+    9,466 SUCCESS / 519 REVERSED / 15 FAILED, 0 manual review, I1-I7 PASS; crash 200/200
+TRANSFER_COUNT=10000 TEST_SEED=2 test:chaos -> 2/2; 10,486 requests, 528 ghosts,
+    9,393 SUCCESS / 523 REVERSED / 84 FAILED, 0 manual review, I1-I7 PASS; crash 200/200
+invariants --since 2026-10-06T21:29:00Z (after both) -> 20,465 transfers, all hold
+clean-room project payment-switch-fresh (ADR-023):
+    stack:up 9/9 healthy, exit 0; seed "10 created", then "0 created, 10 already existed"
+    test:integration 179/179; TRANSFER_COUNT=1000 test:chaos 2/2 (958 / 42, I1-I7)
+    unscoped npm run invariants -> 1,265 transfers, all invariants hold, exit 0
+    removed with down -v --rmi local; development stack restarted 9/9, its volumes intact
+```
+
+**Decisions** (ADR-023)
+- The nightly job runs the 10,000-transfer test twice, with seeds 1 and 2, so every night
+  re-checks the definition-of-done item itself. It ends with an unscoped
+  `npm run invariants`, which is valid because a CI stack is always fresh.
+- mermaid-cli is not a dependency. Puppeteer would download a browser on every `npm ci`.
+- DoD item 2 ("everything matches the spec") was checked by script against §5, §7–§10,
+  §14 and §15, so I did not have to read those sections whole. The only differences are
+  the ADR-recorded deviations.
+- DoD "tests pass in CI" stays unticked: CI has never run, and a local clean-room run is
+  not CI. DoD "explainable without notes" stays unticked because only the owner can
+  check it.
+
+**Gotchas**
+- **`#` in a Mermaid participant label starts a comment.** `Orchestrator #1` and
+  `Orchestrator #2` both rendered as "Orchestrator", so the crash-recovery diagram
+  lost its point, with no error shown. Always look at the rendered PNG.
+- **A clean-room stack without touching the dev stack:** `COMPOSE_PROJECT_NAME=<other>`
+  overrides the file's `name:` and gives fresh volumes. The ports are fixed, so
+  `docker compose -p payment-switch stop` the dev stack first (that keeps its data), and
+  tear the other project down with an explicit `-p`. `tests/helpers/stack.ts` inherits
+  the variable, so the chaos test kills the right Orchestrator.
+- The same seed does not give identical final counts across runs (seed 1: 9,467/518/15
+  in M7, 9,466/519/15 now). Which payer has funds at the moment of its debit depends on
+  how 100 concurrent requests interleave. The invariants hold every time, and the README
+  says so.
+- The unscoped `npm run invariants` on a **fresh** stack passes even after the
+  integration suite (its synthetic rows are released and finished, ADR-020). That
+  confirms ADR-021's diagnosis: on the dev stack only the M3 mutation artifacts fail.
+- A fresh worktree has no `node_modules` or generated code: `npm ci && npm run build`
+  first, or `tsc -b` fails on an empty `packages/proto-gen`.
+
+**Next action**
+- Nothing is left in phase 1 that this machine can check. The owner decides on a GitHub
+  remote: push, watch `static` and `integration`, and trigger `nightly` once by hand. Phase
+  2 (§19) starts only after the two open DoD boxes are ticked.
+
+**Open questions**
+- Reset the development stack to clear the M3 artifacts (ADR-021)? The owner's call. It
+  has not been done.
+- Add a GitHub remote? The owner's call. Nothing has been pushed.

@@ -58,3 +58,8 @@ function toAccount(row: AccountRow): Account {
     status: row.status,
   };
 }
+
+/** Readiness probe for `/readyz`: resolves once the database answers a trivial query. */
+export async function ping(pool: Pool): Promise<void> {
+  await pool.query('SELECT 1');
+}

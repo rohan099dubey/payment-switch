@@ -6,6 +6,7 @@ import { chaosSettingsFromConfig, loadBankConfig } from './config';
 import { createBankHandlers } from './grpc/handlers';
 import { startGrpcServer } from './grpc/server';
 import { createBankMetrics } from './metrics';
+import { ping } from './repo/accountsRepo';
 
 /** Longer than CHAOS_SLOW_MS, so in-flight late applies can finish on SIGTERM. */
 const SHUTDOWN_GRACE_MS = 10_000;
@@ -33,7 +34,7 @@ async function main(): Promise<void> {
     registry,
     logger,
     ready: async () => {
-      await pool.query('SELECT 1');
+      await ping(pool);
       return true;
     },
   });

@@ -60,3 +60,12 @@ Supporting rules:
   rule. An eviction would permit a double spend.
 - **Random per-attempt bank reference ids.** Would break crash recovery entirely — the
   retry could not recognise its own earlier attempt.
+
+## As built (checked in M9, 2026-10-07)
+
+- All three layers are database constraints as listed. A replay polls the row every
+  100 ms for up to `REPLAY_WAIT_MS` while the transfer is in flight, and never drives it.
+- Proven by `tests/integration/idempotency.test.ts`: replay header, `409` on a different
+  body, 50 concurrent duplicates, two clients with the same key, `202` then `200` on a
+  later replay. The 10,000-transfer test sends 5% of its requests as concurrent
+  duplicates and checks I7.
