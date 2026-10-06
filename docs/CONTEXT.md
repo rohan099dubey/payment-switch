@@ -17,7 +17,7 @@ crashes mid-transfer.
 | | |
 |---|---|
 | **Active milestone** | **M9 — Polish** (not started). M0–M8 are `DONE`. |
-| **Next action** | README: all 8 sections in §17 order, quick start with `npm run seed`, numbers only from `docs/benchmarks.md`; render the five diagrams; CI `integration` and `nightly` jobs |
+| **Next action** | README: all 8 sections in §17 order, quick start with `npm run seed`, numbers only from `docs/benchmarks.md`; render the five diagrams; CI `integration` and `nightly` jobs; move the `SELECT 1` readiness pings out of `main.ts` into `repo/` (audit finding, SESSION_LOG) |
 | **Read first for M9** | `ARCHITECTURE.md` sections 17, 20 |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
