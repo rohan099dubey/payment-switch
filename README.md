@@ -158,6 +158,13 @@ looking — that is what makes the project safe to put on a resume.)*
 4. 200 transfers in flight when the Orchestrator was killed (SIGKILL) all ended in `SUCCESS`, finished by the recovery worker after restart.
 5. The checker found real corruption: books deliberately broken by an earlier mutation test (a missing reversal journal, a wrong ledger account), down to the exact paise.
 
+**M8 — Load & metrics**
+1. Load tests with k6 (constant arrival rate, 2 minutes) against the full Docker stack. Every number is in `docs/benchmarks.md` with its machine and commit, and every run was followed by a green invariant check.
+2. On a Ryzen 7 7840HS laptop under Docker Desktop, the stack sustained 75 transfers/s at p95 96 ms and 100/s with 0% errors, and topped out at about 130/s with 0% errors.
+3. I found the ceiling by measuring, not guessing: one Orchestrator process saturates a CPU core. Logging was ruled out by turning it off (no change), and a CPU profile showed the cost spread across gRPC, Postgres round trips and socket writes.
+4. The design already scales horizontally (leases, `SKIP LOCKED`, compare-and-set), so the next step is more Orchestrator instances behind gRPC load balancing. It isn't built, so no number is claimed for it.
+5. Every metric in the spec is exposed, with the right type and labels, and an integration test pins all of them across the five services.
+
 ---
 
 ## Using the API: idempotency rules for clients

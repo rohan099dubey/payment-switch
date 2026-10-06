@@ -18,7 +18,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M5 | Idempotency & unknown outcomes | `DONE` | 6, 12 | 2026-10-06 | see `git log --grep "M5"` |
 | M6 | Recovery | `DONE` | 6, 13 | 2026-10-06 | see `git log --grep "M6"` |
 | M7 | Chaos & invariants | `DONE` | 16 | 2026-10-06 | see `git log --grep "M7"` |
-| M8 | Load & metrics | `NOT_STARTED` | 16, 17 | — | — |
+| M8 | Load & metrics | `DONE` | 16, 17 | 2026-10-06 | see `git log --grep "M8"` |
 | M9 | Polish | `NOT_STARTED` | 17, 20 | — | — |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
@@ -273,12 +273,14 @@ Acceptance
 
 ## M8 — Load & metrics
 
-- [ ] `load/transfer.k6.js` — constant-arrival-rate, 200 iters/s for 2 min, 100 VUs (max 400)
-- [ ] `npm run seed -- --load` creates `L0001`–`L0200` per bank
-- [ ] Every metric in spec §17 is exposed by its service
-- [ ] `docs/benchmarks.md` filled in with **measured** numbers (machine, commit, config, RPS, p50, p95, p99, error rate)
-- [ ] `npm run invariants` green after the load run
-- [ ] Thresholds assessed: `http_req_failed < 1%`, `p(95) < 500 ms` with chaos off
+Details: `ADR-022`; results and analysis in `docs/benchmarks.md`.
+
+- [x] `load/transfer.k6.js` — constant-arrival-rate, 200 iters/s for 2 min, 100 VUs (max 400)
+- [x] `npm run seed -- --load` creates `L0001`–`L0200` per bank
+- [x] Every metric in spec §17 is exposed by its service (`tests/integration/metrics.test.ts`, 24 checks: type + labels)
+- [x] `docs/benchmarks.md` filled in with **measured** numbers (machine, commit, config, RPS, p50, p95, p99, error rate)
+- [x] `npm run invariants` green after the load run (each of the 3 runs, scoped `--since`, `ADR-021`)
+- [x] Thresholds assessed: `http_req_failed < 1%`, `p(95) < 500 ms` with chaos off (errors met at every rate; p95 met at 75/s, missed at 100/s and 200/s: CPU-bound Orchestrator, see benchmarks)
 
 ## M9 — Polish
 

@@ -844,3 +844,69 @@ did is involved. The ledger is append-only, so the clean fix is a fresh stack
 **Open questions**
 - Should the development stack be reset (`npm run stack:down && npm run stack:up`) to
   clear the M3 mutation artifacts? It is the owner's call (it deletes data).
+
+---
+
+## 2026-10-06 — Session 2 (continued) — M8 Load & metrics
+
+**Status at end:** M8 `DONE`, all 6 boxes ticked.
+
+**Done**
+- k6 v2.2.0 installed with `winget install k6` (the owner chose winget over the Docker
+  image when asked). It lives at `C:\Program Files\k6\` and is on the machine PATH for new
+  shells.
+- `scripts/seed.ts`: `npm run seed` creates demo `ACC001`–`ACC005` per bank;
+  `npm run seed -- --load` creates `L0001`–`L0200` per bank with 1,000,000,000 paise each.
+  Idempotent: a second run created 0.
+- `load/transfer.k6.js`: the §16 scenario, spread over the four dev API clients (ADR-022).
+  `eslint.config.mjs` declares the k6 globals for `load/`.
+- `tests/integration/metrics.test.ts`: 24 checks that each §17 metric is exposed by its
+  service with the specified type and label set.
+- `docs/benchmarks.md`: three measured rows and the bottleneck analysis. ADR-022.
+
+**Results (measured; full detail in `docs/benchmarks.md`)**
+```text
+machine: Ryzen 7 7840HS (8C/16T), 15.2 GB, Windows 11, Docker Desktop 29.6.1 / WSL2; commit 9f985fa; chaos off
+target 200/s (spec): 129.7/s achieved, 8,233 dropped, p50 3.05 s, p95 3.37 s, p99 3.51 s, errors 0.00 %
+target 100/s:        99.97/s, p50 85.4 ms, p95 564.1 ms, p99 792.2 ms, errors 0.00 %
+target  75/s:        74.99/s, p50 71.9 ms, p95 95.7 ms, p99 132.4 ms, errors 0.00 % (both thresholds met)
+after each run: npm run invariants -- --since <start> -> all invariants hold (15,768 / 12,001 / 9,000 transfers, all SUCCESS)
+npm run lint / typecheck -> clean / exit 0
+npm test                 -> Test Files 29 passed (29) / Tests 599 passed (599)
+npm run test:integration -> Test Files 10 passed (10) / Tests 179 passed (179), 208 s
+```
+
+**Bottleneck (measured, not guessed)**
+- `docker stats` under the 200/s target: Orchestrator 102–106 % CPU (one core, Node's
+  event loop); everything else has headroom.
+- A diagnostic run with the Orchestrator at `LOG_LEVEL=warn` (temporary Compose
+  override file in the scratchpad, reverted afterwards) gave the same 131/s, so logging is
+  not the cause.
+- A V8 CPU profile (`node -r <preload>` using `inspector`; `--cpu-prof` does not write on
+  Windows when the process is killed) showed no single hotspot: socket writes ~14 %,
+  grpc-js plus HTTP/2 ~14 %, pg ~6 %, pino ~5.5 %.
+
+**Decisions** (ADR-022)
+- The load is spread over four API clients, because one client's 100 rps bucket would
+  make the run measure the limiter.
+- I added runs at 100/s and 75/s to locate the knee, because the spec's single 200/s run
+  saturated. All three rows are measured; nothing is extrapolated.
+- No tuning was attempted. The fix the design supports (more Orchestrator instances
+  behind round-robin gRPC LB) is out of M8's scope, so `benchmarks.md` claims no number
+  for it.
+
+**Gotchas**
+- `Stop-Process` on Windows kills Node outright, so `--cpu-prof` never writes. Use an
+  inspector preload that stops the profiler after a timer.
+- In git-bash, a quoted-delimiter heredoc still mangled `'\'` in a JS file. Use the Write
+  tool for scripts containing backslashes.
+- The unscoped `npm run invariants` still reports the M3 mutation artifacts (ADR-021).
+  The owner has not decided on a stack reset, so every check here is `--since`.
+
+**Next action**
+- **M9 Polish.** Read §17 and §20. README in §17 order (numbers only from
+  `docs/benchmarks.md`), the rendered diagrams, the CI `integration` and `nightly` jobs,
+  the eight spec ADRs (several are stubs from Session 0), and every milestone's five lines.
+
+**Open questions**
+- Development stack reset for the M3 artifacts: still the owner's call.
