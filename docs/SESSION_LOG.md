@@ -910,3 +910,36 @@ npm run test:integration -> Test Files 10 passed (10) / Tests 179 passed (179), 
 
 **Open questions**
 - Development stack reset for the M3 artifacts: still the owner's call.
+
+---
+
+## 2026-10-07 — Session 2 (end) — Audit after the application was terminated
+
+**Status at end:** M0–M8 `DONE`; M9 `NOT_STARTED`. Nothing was lost.
+
+**Checked**
+- Git: `git fsck` clean, working tree clean, no stash; the worktree and `main` are both at
+  `1bd68c5`, with every milestone commit M0–M8 present.
+- No stray files (`.mutant/`, `.seedcheck.ts`, Compose overrides) and no leftover node
+  processes on the mutant or profiling ports (50151, 9201, 8180, 50152, 9202).
+- All nine containers had exited with code 0 (a clean stop); `npm run stack:up` → 9/9
+  healthy. No non-terminal transfers; migrations intact; both banks' chaos off; Orchestrator
+  `LOG_LEVEL=info`.
+- PROGRESS: M0–M8 have no unticked boxes (only M9 and the definition of done remain).
+  22 ADRs, all Accepted. README has five lines for each of M0–M8. Every file in the §3
+  layout exists.
+- After a clean rebuild (dist and generated code deleted): build, lint and typecheck pass;
+  unit 599/599; integration 179/179; the crash recovery test passes (200/200 SUCCESS, all
+  finished by recovery); `npm run invariants -- --since <run start>` → all invariants hold.
+
+**Findings, for M9**
+- `services/{ledger,mockBank,orchestrator}/src/main.ts` each run `pool.query('SELECT 1')`
+  for `/readyz`. That is SQL outside `repo/`, against §3's convention. Move it into a
+  repo-level `ping()` during M9.
+- Still the owner's call: resetting the development stack to clear the M3 mutation
+  artifacts (ADR-021). Until then, use `npm run invariants -- --since`.
+- Worktree `.claude/worktrees/project-overview-build-6d2112` (branch at `d384266`, M2)
+  belongs to another session; it was left alone.
+
+**Next action**
+- **M9 Polish**, in a fresh session (the owner asked for one). Read §17 and §20.
