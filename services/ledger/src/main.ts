@@ -5,6 +5,7 @@ import { loadLedgerConfig } from './config';
 import { createLedgerHandlers } from './grpc/handlers';
 import { startGrpcServer } from './grpc/server';
 import { createLedgerMetrics } from './metrics';
+import { ping } from './repo/balanceRepo';
 
 const SHUTDOWN_GRACE_MS = 10_000;
 
@@ -26,7 +27,7 @@ async function main(): Promise<void> {
     registry,
     logger,
     ready: async () => {
-      await pool.query('SELECT 1');
+      await ping(pool);
       return true;
     },
   });

@@ -16,9 +16,10 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **M9 — Polish** (not started). M0–M8 are `DONE`. |
-| **Next action** | README: all 8 sections in §17 order, quick start with `npm run seed`, numbers only from `docs/benchmarks.md`; render the five diagrams; CI `integration` and `nightly` jobs; move the `SELECT 1` readiness pings out of `main.ts` into `repo/` (audit finding, SESSION_LOG) |
-| **Read first for M9** | `ARCHITECTURE.md` sections 17, 20 |
+| **Active milestone** | **None. Phase 1 milestones M0–M9 are all `DONE`.** |
+| **Definition of done** | 6 of 8 ticked. **Open:** "tests pass in CI" needs a GitHub remote (the workflow has never run), and "explainable without notes" is the owner's to confirm. Phase 2 (§19) starts only when all 8 are ticked |
+| **Next action** | The owner's decisions: add a GitHub remote and push (then watch the `static` and `integration` jobs, and trigger `nightly` with `workflow_dispatch`), and whether to reset the development stack (ADR-021) |
+| **Read first for phase 2** | `ARCHITECTURE.md` section 19 (Phase 2 extensions), and only once the definition of done is complete |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
@@ -148,6 +149,7 @@ Computed against a baseline snapshot taken before each run.
 | Chaos tests: invariants scoped to a baseline / key prefix; `npm run invariants` scoped per transfer (`--since`); a request that gave up during a restart is resent later | `ADR-021` |
 | Recovery: `Resolve` lives in `SagaEngine.settle`, the lease is renewed before each drive, events record `driver` + `lease_owner` | `ADR-020` |
 | Orchestrator: CAS also matches `state`; unrecognised bank errors are `BANK_INVARIANT_VIOLATION`; `INVALID_REQUEST`/`TRANSFER_NOT_FOUND` codes; extra startup checks | `ADR-018` |
+| CI `nightly` runs the 10,000-transfer test **twice** (seeds 1, 2) plus an unscoped `npm run invariants`; jobs gated by event; diagrams rendered by `npx` mermaid-cli, not a dependency | `ADR-023` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
 
@@ -161,7 +163,16 @@ v24, which is forward-compatible with the ES2022/CommonJS target; Docker and CI 
 
 ## Known open questions
 
-None. Both questions from M0–M2 were resolved in M3 (`ADR-010`, `ADR-017`). Two facts
+Two, both the owner's to decide (not design questions):
+
+- **Development stack reset** (`npm run stack:down && npm run stack:up`) to clear the M3
+  mutation artifacts (ADR-021). Until then, use `npm run invariants -- --since <ISO>` on
+  this stack. A clean-room project in M9 showed the unscoped check passing on fresh
+  databases.
+- **A GitHub remote**, so CI can run and the last open "tests pass in CI" box can be
+  checked.
+
+Both design questions from M0–M2 were resolved in M3 (`ADR-010`, `ADR-017`). Two facts
 from that resolution shape every later milestone:
 
 - **`202` is a normal outcome.** Integration tests pass the `CreateTransfer` response to

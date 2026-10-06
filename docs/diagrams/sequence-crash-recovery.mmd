@@ -6,10 +6,10 @@ sequenceDiagram
     autonumber
     actor C as Client
     participant G as Gateway
-    participant O1 as Orchestrator #1
+    participant O1 as Orchestrator 1 (inst1)
     participant DB as orchestrator_db
     participant A as Mock Bank A
-    participant O2 as Orchestrator #2<br/>(recovery worker)
+    participant O2 as Orchestrator 2 (inst2)<br/>recovery worker
     participant L as Ledger
 
     C->>G: POST /v1/transfers (Idempotency-Key k1)

@@ -48,3 +48,11 @@ burst cannot cause a double spend. It can only cause load.
 - **Fail open only for a short grace period, then closed.** More defensible in
   production, but it adds a timer and a second failure mode to test for little benefit
   at this scale.
+
+## As built (checked in M9, 2026-10-07)
+
+- `services/gateway/src/plugins/rateLimit.ts`: the Lua token bucket runs with
+  `EVALSHA` and Redis's own `TIME`; any Redis error lets the request through, logs a
+  warning and increments `rate_limit_fail_open_total`.
+- Proven by `tests/integration/gateway.test.ts`: with Redis stopped, transfers still
+  succeed and the counter increments.

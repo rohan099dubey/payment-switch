@@ -51,3 +51,12 @@ unbalanced, which would make invariant I1 flap under load.
   could straddle a journal's two legs and report a false imbalance.
 - **Advisory locks around balance reads.** Reintroduces exactly the contention ADR-003
   was written to avoid.
+
+## As built (checked in M9, 2026-10-07)
+
+- Every guard in the table exists as listed. One refinement (ADR-018): the
+  compare-and-set also matches `state`, so it is on `(id, version, lease_owner, state)`.
+- Proven under concurrency at `READ COMMITTED`: 50 concurrent debits against funds for
+  10 give exactly 10 (`mockBank.test.ts`); 100 concurrent identical journal posts give one
+  journal (`ledger.test.ts`); 50 concurrent identical transfer requests give one transfer
+  and one debit (`idempotency.test.ts`).

@@ -60,3 +60,13 @@ answer.
 - **Query the bank's statement and reconcile later.** Too slow to answer a synchronous
   client, and it only shifts the race rather than resolving it. Reconciliation is still
   worth having as a safety net — it is phase 2, item 3.
+
+## As built (checked in M9, 2026-10-07)
+
+- Bank side: `Resolve` in `services/mockBank/src/repo/operationsRepo.ts`. Orchestrator
+  side: `SagaEngine.settle()` (ADR-020). A bank's `REFERENCE_VOIDED` is treated exactly
+  like `Resolve` returning `VOIDED` (`domain/failureCodes.ts`).
+- Proven by `tests/integration/mockBank.test.ts` (Debit and Resolve racing on separate
+  connections; each side wins sometimes, every pair agrees) and
+  `tests/integration/failurePaths.test.ts` (`late_apply_rate = 1`: debits held at the
+  bank arrive after `Resolve` voided them, and every one is refused).

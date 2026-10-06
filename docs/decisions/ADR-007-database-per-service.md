@@ -57,3 +57,14 @@ they are the system under test and the isolation boundary must be real.
 - **SQLite per service for tests.** Would require mocking Postgres behaviour the design
   depends on (`ON CONFLICT`, `FOR UPDATE SKIP LOCKED`, deferred constraint triggers).
   Explicitly forbidden.
+
+## As built (checked in M9, 2026-10-07)
+
+- `docker-compose.yml` has exactly the three Postgres containers in the table, plus
+  Redis. No service has another's connection string, and all cross-service access is
+  gRPC.
+- The Compose project name is fixed (`payment-switch`), so every checkout of the
+  repository shares one development stack and one set of volumes.
+- Integration tests drive each service through its public interface. They touch a
+  database directly only to test that database's own rules (for example, a raw insert
+  the Ledger's balance trigger must reject) or to check what the service stored.

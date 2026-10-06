@@ -48,3 +48,13 @@ to reason about and recover when one component holds it.
   the state.
 - **Best-effort with a reconciliation sweep only.** Would leave money mismatched between
   banks for minutes at a time and makes exactly-once impossible to demonstrate.
+
+## As built (checked in M9, 2026-10-07)
+
+- `SagaEngine` (`services/orchestrator/src/domain/saga.ts`) drives the state machine;
+  each step is a compare-and-set plus a `transfer_events` row, committed before the next
+  external call.
+- Refined by ADR-010: the inline budget is a hard bound, and a transfer that runs out of
+  it is answered `202` and finished by recovery, never failed.
+- Proven by `tests/integration/orchestrator.test.ts` (success, `FAILED`, `REVERSED`, with
+  their event trails) and the 10,000-transfer invariant test (I1–I7, twice).

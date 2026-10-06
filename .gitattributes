@@ -29,3 +29,6 @@ Dockerfile text eol=lf
 
 # Generated — do not show in diffs
 package-lock.json -diff linguist-generated
+
+# Rendered diagrams (docs/diagrams, ADR-023)
+*.png      binary

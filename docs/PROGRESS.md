@@ -19,7 +19,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M6 | Recovery | `DONE` | 6, 13 | 2026-10-06 | see `git log --grep "M6"` |
 | M7 | Chaos & invariants | `DONE` | 16 | 2026-10-06 | see `git log --grep "M7"` |
 | M8 | Load & metrics | `DONE` | 16, 17 | 2026-10-06 | see `git log --grep "M8"` |
-| M9 | Polish | `NOT_STARTED` | 17, 20 | — | — |
+| M9 | Polish | `DONE` | 17, 20 | 2026-10-07 | see `git log --grep "M9"` |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -284,22 +284,28 @@ Details: `ADR-022`; results and analysis in `docs/benchmarks.md`.
 
 ## M9 — Polish
 
-- [ ] README complete, all 8 sections in spec §17 order
-- [ ] All five diagrams rendered to PNG for the README
-- [ ] All eight spec ADRs written (plus 009 and 010)
-- [ ] CI `integration` job
-- [ ] CI `nightly` job with the full 10,000-transfer test
-- [ ] Every milestone has its five "What I built and why" README lines
+Details: `ADR-023`.
+
+- [x] README complete, all 8 sections in spec §17 order (headings checked in order; quick start uses `npm run seed`, and its curl output was captured from the live stack; every figure in §6 and in the M8 lines was checked by script against `docs/benchmarks.md`; all 34 relative links resolve)
+- [x] All five diagrams rendered to PNG for the README (mermaid-cli 12.0.0; each PNG inspected; the crash-recovery source fixed, because `#` in a participant name is a Mermaid comment)
+- [x] All eight spec ADRs written (plus 009 and 010). 001–008 were complete pages; each now has an "As built" section with its refining ADRs and proving tests
+- [x] CI `integration` job: written and actionlint-clean (0 errors, shellcheck included). Its commands pass locally. It has **never run on GitHub**: there is no remote
+- [x] CI `nightly` job with the full 10,000-transfer test (seeds 1 and 2, then an unscoped `npm run invariants`): written and actionlint-clean, its commands pass locally, **never run on GitHub**
+- [x] Every milestone has its five "What I built and why" README lines (M0–M9, counted by script)
+- [x] (audit finding) The `SELECT 1` readiness pings moved from `main.ts` into each service's `repo/` (`ping()`); no `.query(` remains outside `repo/`, and every `/readyz` returns 200 on the rebuilt stack
 
 ## Definition of done — phase 1
 
 From spec §20. Phase 2 (§19) starts only when every box here is ticked.
 
-- [ ] `npm run stack:up` starts all services with no manual steps, and `npm run seed` creates demo accounts
-- [ ] Every proto file, schema, env var, endpoint and error code matches `ARCHITECTURE.md`
-- [ ] Unit and integration tests pass locally **and** in CI
-- [ ] The 10,000-transfer invariant test passes twice in a row with different seeds; I1–I7 hold; zero manual review
-- [ ] The crash recovery test passes
-- [ ] k6 results recorded in `docs/benchmarks.md`, invariants held during the load run
-- [ ] README complete, diagrams rendered, all eight ADRs written
-- [ ] Every milestone has its five "What I built and why" lines, explainable without notes
+Checked in M9 (2026-10-07). Six of eight are ticked; the other two cannot be observed
+from this machine and are marked **OPEN** with the reason.
+
+- [x] `npm run stack:up` starts all services with no manual steps, and `npm run seed` creates demo accounts (clean-room project with empty volumes, ADR-023: 9/9 healthy, exit 0; seed "10 created", then "0 created, 10 already existed")
+- [x] Every proto file, schema, env var, endpoint and error code matches `ARCHITECTURE.md`, apart from the deviations recorded in ADRs 009–023. Checked by script, not by eye: the three protos are byte-identical to §9; every §10 SQL statement appears verbatim in the migrations, and the only extras are ADR-015's two `TRUNCATE` triggers; every §15 variable is in its service's `config.ts` with the spec default, and in `.env.example`; all six §5 endpoints are registered; every error code named in §5, §7, §8 and §14 appears in the source
+- [ ] **OPEN: needs a GitHub remote.** Unit and integration tests pass locally **and** in CI. Locally: unit 599/599; integration 179/179 on the development stack and again on a clean-room stack. CI: the workflow is actionlint-clean, but there is no remote, so it has never run
+- [x] The 10,000-transfer invariant test passes twice in a row with different seeds; I1–I7 hold; zero manual review (re-run in M9 on the final code: seed 1 → 9,466 / 519 / 15; seed 2 → 9,393 / 523 / 84; first observed in M7)
+- [x] The crash recovery test passes (three times in M9: 200/200 `SUCCESS`, all finished by recovery, I1–I6)
+- [x] k6 results recorded in `docs/benchmarks.md`, invariants held during the load run (three measured rows from M8, each with its invariant check; the load was not re-run in M9)
+- [x] README complete, diagrams rendered, all eight ADRs written
+- [ ] **OPEN: the owner's to confirm.** Every milestone has its five "What I built and why" lines (M0–M9, counted), *and the owner can explain each one without notes*. Only the owner can check the second half
