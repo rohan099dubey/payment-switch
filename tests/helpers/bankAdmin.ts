@@ -1,6 +1,6 @@
 /** gRPC admin access to both Mock Banks (ports 50061 / 50062), section 16. */
 import { callUnary, makeClient } from '@switch/common';
-import { BankServiceClient, type ChaosConfig } from '@switch/proto-gen/bank/v1';
+import { BankServiceClient, OperationStatus, OperationType, type ChaosConfig } from '@switch/proto-gen/bank/v1';
 
 export type BankId = 'bank_a' | 'bank_b';
 const TIMEOUT_MS = 5000;
@@ -38,6 +38,42 @@ export class BankAdmin {
   async setChaos(bank: BankId, config: ChaosConfig): Promise<ChaosConfig> {
     const c = this.clients[bank];
     return callUnary(c.setChaosConfig.bind(c), config, { timeoutMs: TIMEOUT_MS });
+  }
+
+  async getOperation(
+    bank: BankId,
+    referenceId: string,
+    operation: 'DEBIT' | 'CREDIT' | 'REVERSE_DEBIT',
+  ): Promise<{ status: 'APPLIED' | 'VOIDED' | 'NOT_FOUND'; amount: bigint }> {
+    const c = this.clients[bank];
+    const type =
+      operation === 'DEBIT'
+        ? OperationType.OPERATION_TYPE_DEBIT
+        : operation === 'CREDIT'
+          ? OperationType.OPERATION_TYPE_CREDIT
+          : OperationType.OPERATION_TYPE_REVERSE_DEBIT;
+    const res = await callUnary(c.getOperation.bind(c), { referenceId, operation: type }, { timeoutMs: TIMEOUT_MS });
+    const status =
+      res.status === OperationStatus.OPERATION_STATUS_APPLIED
+        ? 'APPLIED'
+        : res.status === OperationStatus.OPERATION_STATUS_VOIDED
+          ? 'VOIDED'
+          : 'NOT_FOUND';
+    return { status, amount: BigInt(res.amount) };
+  }
+
+  /** Back to the defaults docker-compose.yml starts the banks with: no chaos. */
+  async clearChaos(bank: BankId): Promise<void> {
+    await this.setChaos(bank, {
+      down: false,
+      latencyMinMs: 0,
+      latencyMaxMs: 0,
+      rejectRate: 0,
+      lateApplyRate: 0,
+      lostResponseRate: 0,
+      slowMs: 3000,
+      seed: 42,
+    });
   }
 
   close(): void {

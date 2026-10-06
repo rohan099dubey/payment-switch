@@ -12,6 +12,7 @@
     { "path": "services/orchestrator/test" },
     { "path": "services/gateway" },
     { "path": "services/gateway/test" },
-    { "path": "tests" }
+    { "path": "tests" },
+    { "path": "scripts" }
   ]
 }
