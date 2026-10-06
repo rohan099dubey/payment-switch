@@ -151,6 +151,13 @@ looking — that is what makes the project safe to put on a resume.)*
 4. A SIGKILLed Orchestrator mid-transfer is finished by a second instance, and only after the dead one's lease expired. Every state change records which driver and lease made it.
 5. Recovery has a budget: 20 attempts, then manual review with an alert metric. Transfers from earlier test runs left mid-debit were all completed with exactly one debit, one credit and both ledger legs.
 
+**M7 — Chaos & invariants**
+1. 10,000 transfers under seeded chaos (5% rejected, 2% applied late, 3% with lost responses) and three Orchestrator SIGKILLs: every invariant held, twice in a row with different seeds, and nothing needed manual review.
+2. Seven invariants are checked against a baseline: every journal balances, money is conserved, `transit` returns to zero, the ledger agrees with each bank, effects are exactly-once per transfer, everything finishes, and replays are idempotent.
+3. "Exactly once" is checked transfer by transfer: each one's bank operations and journals are fetched from the services and compared, by final state, against what that state allows.
+4. 200 transfers in flight when the Orchestrator was killed (SIGKILL) all ended in `SUCCESS`, finished by the recovery worker after restart.
+5. The checker found real corruption: books deliberately broken by an earlier mutation test (a missing reversal journal, a wrong ledger account), down to the exact paise.
+
 ---
 
 ## Using the API: idempotency rules for clients

@@ -748,3 +748,99 @@ refunded → 1; R6 `Resolve` one attempt late → 9. Sources were restored and h
 
 **Open questions**
 - None.
+
+---
+
+## 2026-10-06 — Session 2 (continued) — M7 Chaos & invariants
+
+**Status at end:** M7 `DONE`, all 12 boxes ticked.
+
+**Done**
+- Helpers: `tests/helpers/invariants.ts` (`snapshotBaseline`, `loadTransfers`,
+  `collectEvidence` via `GetOperation` and `ListJournals`, `checkI1`–`checkI7`,
+  `checkScoped`), `ledgerClient.ts` (`LedgerReader`), `chaosRun.ts` (quiesce, accounts,
+  the section 16 retrying client, `awaitAllTerminal`, `evaluate`), `stack.ts`
+  (`killService`, `waitReady`), `bankAdmin.ts` (`getOperation`, `clearChaos`).
+- `tests/chaos/crashRecovery.test.ts` and `tests/chaos/invariant.test.ts` follow the
+  section 16 steps. `scripts/checkInvariants.ts` (`npm run invariants [-- --since ISO]`)
+  has its own composite tsconfig in the root references.
+- `tests/helpers/invariants.test.ts`: 20 no-I/O unit tests of the checks. The unit project
+  now also includes `tests/helpers/**/*.test.ts` (a small extension of ADR-013).
+- `npm run test:chaos` passes `--silent=false`. vitest 5 hides console output from passing
+  tests, and a project-level `silent: false` is ignored.
+- ADR-021 records the interpretations.
+
+**Results (measured, from the run logs)**
+```text
+crash recovery (200 transfers, SIGKILL after ~1 s, restart 3 s later), two runs:
+  run 1: http {201: 30, 503: 170} -> 200 registered, 200 SUCCESS, 170 finished by recovery; I1-I6 PASS
+  run 2: http {503: 200}          -> 200 registered, 200 SUCCESS, 200 finished by recovery; I1-I6 PASS
+invariant test, 1,000 transfers (CI size): seeds 101 and 102 PASS I1-I7
+invariant test, 10,000 transfers, chaos seed 42, three Orchestrator kills:
+  TEST_SEED=1: 10,486 requests, 486 duplicate keys, 520 ghost payees, 0 unanswered
+               final SUCCESS 9,467 / REVERSED 518 / FAILED 15 (INSUFFICIENT_FUNDS); 0 manual review
+               chaos injected (bank_a+bank_b): reject 1,102, late_apply 491, lost_response 724
+               recovery finished 295 transfers (888 events); p50 544 ms, p95 2,687 ms; 109 s total
+               I1-I7 PASS
+  TEST_SEED=2: 10,486 requests, 486 duplicate keys, 528 ghost payees, 0 unanswered
+               final SUCCESS 9,397 / REVERSED 524 / FAILED 79; 0 manual review
+               chaos injected: reject 1,098, late_apply 491, lost_response 720
+               recovery finished 290 transfers (845 events); p50 505 ms, p95 2,649 ms; 104 s total
+               I1-I7 PASS
+npm run invariants -- --since 2026-10-06T13:30:00Z -> 24,597 transfers, I1-I6 PASS, exit 0
+npm run lint / typecheck  -> clean / exit 0
+npm test                  -> Test Files 29 passed (29) / Tests 599 passed (599)
+npm run stack:up          -> 9/9 healthy
+npm run test:integration  -> Test Files 9 passed (9) / Tests 155 passed (155), 213 s
+```
+Both seeds produced exactly 486 duplicate keys. I checked that this is a coincidence, not
+a broken seed: recomputing the workloads offline gives different payers, payees and
+amounts from the very first transfer, and different ghost counts (520 vs 528).
+
+**The unscoped `npm run invariants` fails, and that is a real finding** (ADR-021). Its
+first run reported I3 and I4 off by exactly −175,000 and 6 `REVERSED` transfers with no
+reversal journal. I traced every row to the **M3 mutation run** (2026-10-05,
+18:40:31–18:41:00), whose mutant Orchestrator ran against the shared databases. Mutant B
+(no reversal journal) gives 6 × +12,500; mutant E (debit leg credits `payable`) gives
+20 × −12,500. The sum is −175,000, exact to the paise. The one synthetic
+`NEEDS_MANUAL_REVIEW` row (the M3 repo test) makes I6 fail as well. Nothing the real code
+did is involved. The ledger is append-only, so the clean fix is a fresh stack
+(`npm run stack:down && npm run stack:up`). That deletes every development database, so
+**it is the owner's decision**; it is not done.
+
+**Decisions** (details in ADR-021)
+- Chaos tests: invariants against a baseline over the run's accounts, plus the run's
+  transfers by idempotency-key prefix. They quiesce first, because live recovery would
+  otherwise move money during the measurement.
+- `npm run invariants`: I2–I4 evaluated per transfer from the evidence, because the
+  databases also hold direct Ledger and bank test traffic. `--since` limits the scope.
+- **A request still failing after its 10 × 500 ms retries is sent again later** with the
+  same key, and the test still requires every request to end with an answer. A
+  kill-and-restart takes about 5 s on Docker Desktop (2 s wait, then about 1.7 s for
+  `docker compose start` alone). The Gateway reconnects in about 0.1 s once the
+  Orchestrator is up, so no code is the bottleneck. One 1,000-transfer run without the
+  resend failed on 11 unanswered requests; with it, every run so far needed no resend
+  (`gaveUpAfterRetries: 0`), but the path exists for when Docker is slow.
+- I5 is stricter than the table: amounts must match, and `FAILED` must have no credit or
+  refund row at all, not merely none applied.
+
+**Gotchas**
+- **Mutation runs must never use the shared databases.** The M3 run left permanently
+  inconsistent books (append-only, so they cannot be fixed in place). Future mutation
+  checks need their own Postgres (for example a throwaway Compose project name).
+- vitest 5: `console.log` from passing tests is hidden unless `--silent=false` is given
+  on the CLI; the project-level option does nothing.
+- An Orchestrator kill also resets its in-process counters, so recovery activity is
+  counted from `transfer_events.detail.driver` instead.
+- The I3 baseline differs between runs (1,199,198, then 1,264,636) because the integration
+  suite's Ledger tests post `transit` journals directly. Baseline-relative checks are
+  unaffected, which is why they are baseline-relative.
+
+**Next action**
+- **M8 Load & metrics.** Read §16 (load test) and §17. `scripts/seed.ts --load`, then
+  `load/transfer.k6.js` (is k6 installed?). Record measured numbers only, in
+  `docs/benchmarks.md`.
+
+**Open questions**
+- Should the development stack be reset (`npm run stack:down && npm run stack:up`) to
+  clear the M3 mutation artifacts? It is the owner's call (it deletes data).

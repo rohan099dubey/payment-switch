@@ -19,7 +19,7 @@
     "typecheck": "tsc -b",
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "test:chaos": "vitest run --project chaos",
+    "test:chaos": "vitest run --project chaos --silent=false",
     "stack:up": "docker compose up -d --build --wait",
     "stack:down": "docker compose down -v",
     "seed": "tsx scripts/seed.ts",

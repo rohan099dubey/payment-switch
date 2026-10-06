@@ -8,7 +8,8 @@ export default defineConfig({
       {
         test: {
           name: 'unit',
-          include: ['packages/*/test/**/*.test.ts', 'services/*/test/**/*.test.ts'],
+          // tests/helpers/*.test.ts: pure checks of the invariant library, no I/O.
+          include: ['packages/*/test/**/*.test.ts', 'services/*/test/**/*.test.ts', 'tests/helpers/**/*.test.ts'],
         },
       },
       // Integration and chaos tests share one live stack and assert on balance deltas,
