@@ -137,6 +137,13 @@ looking — that is what makes the project safe to put on a resume.)*
 4. Status codes carry meaning a client can act on. 201 is a new success and 200 a replay of one, 422 is a business failure, and 202 plus `Location` means "still in flight, poll". Each gRPC error maps to exactly one HTTP error.
 5. Security-relevant details are pinned by tests: secrets are compared in constant time, nothing secret is ever logged, and a vulnerable JWT library was replaced (ADR-019). A test caught tokens that would have lived 10 days instead of 15 minutes.
 
+**M5 — Idempotency & unknown outcomes**
+1. A retry can never move money twice. Each layer has its own key and its own database constraint: client to switch, switch to bank, switch to ledger.
+2. A reused key with a different body is rejected (409) using a SHA-256 fingerprint of the canonical request, so a client bug can't silently send a different amount.
+3. 50 identical requests fired at once produce one transfer, one saga and one bank debit. The unique index picks the winner; the losers wait briefly and return the winner's result.
+4. A replay never drives a transfer; only its owner or the recovery worker does. Every state change records the request that caused it, and a test checks that no state change ever carries the replay's request id.
+5. A timeout isn't a failure. Unknown outcomes are retried inline with the same idempotent request, and if that runs out the transfer is handed to recovery with backoff, never failed. Six planted bugs in this logic were each caught by a test.
+
 ---
 
 ## Using the API: idempotency rules for clients

@@ -117,3 +117,12 @@ under "Active deviations" in `docs/CONTEXT.md`.
 - The k6 numbers in M8 are measured with chaos off, where the budget is never touched.
   If inline latency under chaos matters later, option 3 can still be added by config,
   with no code change.
+
+## Amendment (M5, 2026-10-06)
+
+The M5 box for `lost_response_rate = 1` was **moved to M6's acceptance list** in
+`docs/PROGRESS.md`, instead of staying in M5 unticked until M6. The criterion is unchanged
+and still has to be observed passing. It now lives in the milestone that can satisfy it,
+which matches section 16, where it belongs to the `failurePaths` tests. The alternative,
+declaring M5 `DONE` with an open box, would contradict the merge policy that every box is
+ticked.
