@@ -16,6 +16,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { mulberry32 } from '../../services/mockBank/src/chaos/prng';
 import { BankAdmin, type BankId } from '../helpers/bankAdmin';
 import { DEV_CLIENTS, GatewayClient, type HttpResult } from '../helpers/gatewayClient';
+import { waitFor } from '../helpers/stack';
 
 const ORCH_DB = process.env.ORCHESTRATOR_DATABASE_URL ?? 'postgres://orch:orch@localhost:5433/orchestrator_db';
 const BANK_A_DB = process.env.BANK_A_DATABASE_URL ?? 'postgres://banks:banks@localhost:5435/bank_a';
@@ -98,6 +99,25 @@ async function transfersForKey(clientId: string, key: string): Promise<number> {
     [clientId, key],
   );
   return r.rows[0]?.n ?? -1;
+}
+
+/**
+ * Waits until no transfer is in flight. Since M6 the recovery worker drives earlier
+ * tests' pending transfers in the background; its bank calls would show up in the
+ * Orchestrator's global counters and consume chaos PRNG draws. Tests that measure either
+ * call this first, so their window contains only their own traffic.
+ */
+async function quiesce(): Promise<void> {
+  await waitFor(
+    'no transfer in flight',
+    async () => {
+      const r = await orchDb.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM transfers WHERE state NOT IN ('SUCCESS','FAILED','REVERSED','NEEDS_MANUAL_REVIEW')",
+      );
+      return r.rows[0]?.n === 0;
+    },
+    60_000,
+  );
 }
 
 async function debitRows(transferId: string): Promise<number> {
@@ -184,44 +204,49 @@ describe('fingerprint (section 12 rule 2)', () => {
 });
 
 describe('concurrent duplicates (section 12 rule 4)', () => {
-  it('50 concurrent identical requests: exactly one transfer, one saga, one bank debit', async () => {
-    const { payer, payee } = await accounts(100_000n);
-    const key = uniqueId('key');
-    // Warm separate connections first so the 50 requests really arrive together.
-    await Promise.all(
-      Array.from({ length: 50 }, () => fetch(`${process.env.GATEWAY_URL ?? 'http://localhost:8080'}/healthz`)),
-    );
-    const debitsBefore = await downstreamCalls('Debit', 'ok');
+  it(
+    '50 concurrent identical requests: exactly one transfer, one saga, one bank debit',
+    { timeout: 90_000 },
+    async () => {
+      await quiesce();
+      const { payer, payee } = await accounts(100_000n);
+      const key = uniqueId('key');
+      // Warm separate connections first so the 50 requests really arrive together.
+      await Promise.all(
+        Array.from({ length: 50 }, () => fetch(`${process.env.GATEWAY_URL ?? 'http://localhost:8080'}/healthz`)),
+      );
+      const debitsBefore = await downstreamCalls('Debit', 'ok');
 
-    const results = await Promise.all(
-      Array.from({ length: 50 }, () => client.createTransfer(body(payer, payee, 2500), key)),
-    );
+      const results = await Promise.all(
+        Array.from({ length: 50 }, () => client.createTransfer(body(payer, payee, 2500), key)),
+      );
 
-    const statuses = results.map((r) => r.status);
-    expect(statuses.filter((s) => s === 201)).toHaveLength(1);
-    expect(statuses.filter((s) => s === 200)).toHaveLength(49);
-    expect(results.filter((r) => !isReplay(r))).toHaveLength(1);
-    const ids = new Set(results.map(idOf));
-    expect(ids.size).toBe(1);
-    const [id] = [...ids];
-    if (id === undefined) throw new Error('no transfer id');
+      const statuses = results.map((r) => r.status);
+      expect(statuses.filter((s) => s === 201)).toHaveLength(1);
+      expect(statuses.filter((s) => s === 200)).toHaveLength(49);
+      expect(results.filter((r) => !isReplay(r))).toHaveLength(1);
+      const ids = new Set(results.map(idOf));
+      expect(ids.size).toBe(1);
+      const [id] = [...ids];
+      if (id === undefined) throw new Error('no transfer id');
 
-    expect(await transfersForKey(DEV_CLIENTS.a.id, key)).toBe(1);
-    expect(await debitRows(id)).toBe(1);
-    expect(await banks.balance('bank_a', payer)).toBe(97_500n);
-    expect(await banks.balance('bank_b', payee)).toBe(2_500n);
-    // One saga: the Orchestrator made exactly one successful Debit call for all 50 requests.
-    expect((await downstreamCalls('Debit', 'ok')) - debitsBefore).toBe(1);
-    // One drive: a single, linear event trail.
-    expect((await events(id)).map((e) => e.to_state)).toEqual([
-      'INITIATED',
-      'DEBIT_SENT',
-      'DEBITED',
-      'CREDIT_SENT',
-      'CREDITED',
-      'SUCCESS',
-    ]);
-  });
+      expect(await transfersForKey(DEV_CLIENTS.a.id, key)).toBe(1);
+      expect(await debitRows(id)).toBe(1);
+      expect(await banks.balance('bank_a', payer)).toBe(97_500n);
+      expect(await banks.balance('bank_b', payee)).toBe(2_500n);
+      // One saga: the Orchestrator made exactly one successful Debit call for all 50 requests.
+      expect((await downstreamCalls('Debit', 'ok')) - debitsBefore).toBe(1);
+      // One drive: a single, linear event trail.
+      expect((await events(id)).map((e) => e.to_state)).toEqual([
+        'INITIATED',
+        'DEBIT_SENT',
+        'DEBITED',
+        'CREDIT_SENT',
+        'CREDITED',
+        'SUCCESS',
+      ]);
+    },
+  );
 
   it('10 concurrent requests with one key but different amounts: one transfer, nine 409s', async () => {
     const { payer, payee } = await accounts(100_000n);
@@ -300,7 +325,8 @@ describe('a replay never drives the saga', () => {
     await chaos('bank_a', { down: false });
     const replayRequestId = uniqueId('req-replay');
     const replay = await client.createTransfer(body(payer, payee), key, { 'x-request-id': replayRequestId });
-    expect(replay.status).toBe(202);
+    // 202, or 200 if the recovery worker (M6) finished the transfer during the replay's wait.
+    expect([200, 202]).toContain(replay.status);
     expect(isReplay(replay)).toBe(true);
     expect(idOf(replay)).toBe(idOf(first));
 
@@ -321,22 +347,28 @@ describe('unknown outcomes: inline retries and yield', () => {
     throw new Error('no seed found');
   }
 
-  it('a rejected (UNAVAILABLE) debit is retried inline with the same request and the transfer succeeds once', async () => {
-    const { payer, payee } = await accounts(10_000n);
-    await chaos('bank_a', { rejectRate: 0.5, seed: rejectThenPassSeed() });
-    const unknownBefore = await downstreamCalls('Debit', 'unknown');
-    const okBefore = await downstreamCalls('Debit', 'ok');
+  it(
+    'a rejected (UNAVAILABLE) debit is retried inline with the same request and the transfer succeeds once',
+    { timeout: 90_000 },
+    async () => {
+      await quiesce();
+      const { payer, payee } = await accounts(10_000n);
+      await chaos('bank_a', { rejectRate: 0.5, seed: rejectThenPassSeed() });
+      const unknownBefore = await downstreamCalls('Debit', 'unknown');
+      const okBefore = await downstreamCalls('Debit', 'ok');
 
-    const res = await client.createTransfer(body(payer, payee), uniqueId('key'));
+      const res = await client.createTransfer(body(payer, payee), uniqueId('key'));
 
-    expect(res.status).toBe(201);
-    expect((await downstreamCalls('Debit', 'unknown')) - unknownBefore).toBe(1);
-    expect((await downstreamCalls('Debit', 'ok')) - okBefore).toBe(1);
-    expect(await debitRows(idOf(res))).toBe(1);
-    expect(await banks.balance('bank_a', payer)).toBe(9_000n);
-  });
+      expect(res.status).toBe(201);
+      expect((await downstreamCalls('Debit', 'unknown')) - unknownBefore).toBe(1);
+      expect((await downstreamCalls('Debit', 'ok')) - okBefore).toBe(1);
+      expect(await debitRows(idOf(res))).toBe(1);
+      expect(await banks.balance('bank_a', payer)).toBe(9_000n);
+    },
+  );
 
-  it('a definite failure is never retried: one Debit call, FAILED', async () => {
+  it('a definite failure is never retried: one Debit call, FAILED', { timeout: 90_000 }, async () => {
+    await quiesce();
     const { payer, payee } = await accounts(10n);
     const definiteBefore = await downstreamCalls('Debit', 'definite');
     const unknownBefore = await downstreamCalls('Debit', 'unknown');
@@ -347,36 +379,41 @@ describe('unknown outcomes: inline retries and yield', () => {
     expect((await downstreamCalls('Debit', 'unknown')) - unknownBefore).toBe(0);
   });
 
-  it('after INLINE_BANK_RETRIES the saga yields: state kept, attempts + 1, next_attempt_at = now + backoff(1), lease released', async () => {
-    const { payer, payee } = await accounts(10_000n);
-    await chaos('bank_a', { down: true });
-    const unknownBefore = await downstreamCalls('Debit', 'unknown');
-    const ledgerBefore = await downstreamCalls('PostJournal', 'ok');
+  it(
+    'after INLINE_BANK_RETRIES the saga yields: state kept, attempts + 1, next_attempt_at = now + backoff(1), lease released',
+    { timeout: 90_000 },
+    async () => {
+      await quiesce();
+      const { payer, payee } = await accounts(10_000n);
+      await chaos('bank_a', { down: true });
+      const unknownBefore = await downstreamCalls('Debit', 'unknown');
+      const ledgerBefore = await downstreamCalls('PostJournal', 'ok');
 
-    const res = await client.createTransfer(body(payer, payee), uniqueId('key'));
+      const res = await client.createTransfer(body(payer, payee), uniqueId('key'));
 
-    expect(res.status).toBe(202);
-    expect(res.body).toMatchObject({ status: 'PENDING', state: 'DEBIT_SENT', failure_code: null });
-    expect((await downstreamCalls('Debit', 'unknown')) - unknownBefore).toBe(INLINE_BANK_ATTEMPTS);
-    expect((await downstreamCalls('PostJournal', 'ok')) - ledgerBefore).toBe(0);
+      expect(res.status).toBe(202);
+      expect(res.body).toMatchObject({ status: 'PENDING', state: 'DEBIT_SENT', failure_code: null });
+      expect((await downstreamCalls('Debit', 'unknown')) - unknownBefore).toBe(INLINE_BANK_ATTEMPTS);
+      expect((await downstreamCalls('PostJournal', 'ok')) - ledgerBefore).toBe(0);
 
-    const { rows } = await orchDb.query<{
-      state: string;
-      attempts: number;
-      lease_owner: string | null;
-      lease_expires_at: Date | null;
-      delay_ms: string;
-    }>(
-      `SELECT state, attempts, lease_owner, lease_expires_at,
+      const { rows } = await orchDb.query<{
+        state: string;
+        attempts: number;
+        lease_owner: string | null;
+        lease_expires_at: Date | null;
+        delay_ms: string;
+      }>(
+        `SELECT state, attempts, lease_owner, lease_expires_at,
               (extract(epoch FROM next_attempt_at - updated_at) * 1000)::text AS delay_ms
          FROM transfers WHERE id = $1`,
-      [idOf(res)],
-    );
-    const row = rows[0];
-    expect(row).toMatchObject({ state: 'DEBIT_SENT', attempts: 1, lease_owner: null, lease_expires_at: null });
-    // backoff(1) = 2000 ms plus up to 20 % jitter.
-    expect(Number(row?.delay_ms)).toBeGreaterThanOrEqual(2000);
-    expect(Number(row?.delay_ms)).toBeLessThanOrEqual(2400);
-    expect(await banks.balance('bank_a', payer)).toBe(10_000n);
-  });
+        [idOf(res)],
+      );
+      const row = rows[0];
+      expect(row).toMatchObject({ state: 'DEBIT_SENT', attempts: 1, lease_owner: null, lease_expires_at: null });
+      // backoff(1) = 2000 ms plus up to 20 % jitter.
+      expect(Number(row?.delay_ms)).toBeGreaterThanOrEqual(2000);
+      expect(Number(row?.delay_ms)).toBeLessThanOrEqual(2400);
+      expect(await banks.balance('bank_a', payer)).toBe(10_000n);
+    },
+  );
 });

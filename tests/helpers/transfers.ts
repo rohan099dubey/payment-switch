@@ -4,8 +4,8 @@
  * saga. They hand its response to `awaitTerminal`, which polls `GetTransfer` until the
  * transfer is terminal or `timeoutMs` passes.
  *
- * Before M6 nothing drives a yielded transfer, so with chaos off a yield is a real
- * failure: the poll times out and the test fails instead of masking it.
+ * Since M6 the recovery worker finishes a yielded transfer, so the poll timeout must
+ * cover recovery's backoff (2, 4, 8 s, then Resolve) when chaos is on.
  */
 import { callUnary, sleep } from '@switch/common';
 import { TransferState, type Transfer, type TransferServiceClient } from '@switch/proto-gen/orchestrator/v1';

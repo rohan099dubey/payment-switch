@@ -652,3 +652,99 @@ keeps the lease → 1; M6 no `ON CONFLICT` → 10.
 
 **Open questions**
 - None.
+
+---
+
+## 2026-10-06 — Session 2 (continued) — M6 Recovery
+
+**Status at end:** M6 `DONE`. All 12 implementation boxes and all 8 acceptance boxes are
+ticked, including the one moved from M5 and the added "202 leftovers are finished" box.
+
+**Done**
+- `services/orchestrator/src/recovery/worker.ts`: `RecoveryWorker` (poll, claim, 5 lanes,
+  in-flight gauge, stop with grace) and `recoveryAction` (pure: exhaust, resolve or advance).
+- `SagaEngine.settle` (the `Resolve` branches) and `SagaEngine.exhaust`. `BankPort.resolve`
+  in `clients/bankClients.ts`. Repo: `renewLease`, `countInFlight`, `createRecoveryStore`.
+  Metrics: `recovery_runs_total{result}`, `transfers_in_flight{state}`. `main.ts` starts
+  the worker and stops it on SIGTERM after the gRPC server.
+- Event detail now records `driver` and `lease_owner` (ADR-020).
+- Tests: `test/recovery/worker.test.ts` (39), `test/metrics.test.ts` (2), and
+  `tests/integration/failurePaths.test.ts` (8): definite failures; a bank down 3 s → SUCCESS;
+  the Ledger stopped with 3 transfers → pending (debit applied, no leg) → all SUCCESS after
+  restart; `lost_response_rate = 1` → SUCCESS through `Resolve` APPLIED, one debit;
+  `late_apply_rate = 1` with `slow_ms` 45 s → FAILED / `DEBIT_NOT_CONFIRMED`, all 9 late
+  debits refused with `REFERENCE_VOIDED`, balance untouched; an Orchestrator killed with
+  SIGKILL mid-transfer → a second instance (spawned on 50151) finishes it, with every
+  recovery event dated after the dead lease's expiry; nothing older than 5 minutes left
+  in flight.
+- ADR-020.
+
+**First run of the worker against the shared database:** it drained 148 leftovers in under
+20 s. 117 synthetic rows from M3's repo tests (payer `A1`, which exists at no bank) went
+to `FAILED` / `PAYER_ACCOUNT_NOT_FOUND`, moving no money. 31 transfers left `DEBIT_SENT` by
+the M4/M5 202 tests went to SUCCESS. A cross-database check showed exactly 31
+`DEBIT APPLIED` + 31 `CREDIT APPLIED` and 31 + 31 ledger legs.
+
+**Verification**
+```text
+npm run lint          -> clean; npm run typecheck -> exit 0
+npm test              -> Test Files 28 passed (28) / Tests 579 passed (579)
+npm run stack:up      -> 9/9 healthy
+npm run test:integration -> Test Files 9 passed (9) / Tests 155 passed (155), 204 s and 213 s
+                         (two consecutive clean runs after the quiesce fix below)
+failurePaths alone    -> Tests 8 passed (8), 175 s (first run)
+docker compose stop orchestrator -> "shutting down" / "stopped", exit=0
+non-terminal transfers afterwards -> 0
+```
+
+**Mutation check**, each mutant on its own against `test/recovery`. All were caught:
+R1 `VOIDED` treated as `APPLIED` → 2 failed; R2 `REVERSING` settled by `Resolve` → 4;
+R3 no exhaustion → 6; R4 drive although the lease lapsed → 1; R5 a voided credit is not
+refunded → 1; R6 `Resolve` one attempt late → 9. Sources were restored and hash-checked.
+
+**Decisions** (details in ADR-020)
+- `Resolve` lives in the saga (`settle`), so it shares the CAS, logging, metrics and
+  stale-lease handling. The worker only chooses the action.
+- One lease token per claim (the §13 query takes one `$1`), plus `renewLease` immediately
+  before each drive, because a late batch item can outlive its lease.
+- Exhaustion is checked first, in every state including `REVERSING` (scenario 11).
+- **Two earlier tests changed for live recovery.** M4's 202 test now waits for recovery to
+  finish it (SUCCESS, exactly one debit) instead of asserting "no money moved". M5's
+  "replay never drives" test accepts 200 as well as 202, because recovery may legitimately
+  finish the transfer during the replay's wait; the request-id assertion is what proves it.
+- **The repo-level tests park their synthetic rows** (`next_attempt_at = 'infinity'`)
+  while they run, so a test that expires a lease cannot race the worker. They release the
+  rows in `afterAll`, with payers that exist at no bank, so recovery fails them and moves
+  nothing. The CAS race test no longer has a `NEEDS_MANUAL_REVIEW` contender.
+
+**Gotchas**
+- **Docker Desktop was down again** at the start of M6 (third time this session). Relaunch
+  it with `Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"` and run
+  `npm run stack:up`.
+- **A historical synthetic `NEEDS_MANUAL_REVIEW` row exists** (client
+  `m3repo-f543949b-client-32`, created 2026-10-05, `failure_code` NULL). It came from M3's
+  old CAS race test. I left it alone: changing state outside the CAS would be worse. **M7's
+  invariant I6 must be computed against the run's baseline**, which the spec already says,
+  or it will count this row.
+- TypeScript narrows `this.stopping` to `false` inside `while (!this.stopping)` and then
+  calls a later `if (this.stopping)` "unnecessary" (lint), because it cannot see the
+  mutation across `await`. Read the flag through a method.
+- A stopped container's name stops resolving, so while the Ledger is down every ledger
+  call waits out its full 2 s deadline. The three Ledger-outage transfers take about 6.5 s
+  each to answer 202 (still inside the 10 s Gateway deadline).
+- **Live recovery pollutes global counters.** A full run failed once with `Debit unknown`
+  delta 6 instead of 3: while the test held `bank_a` down, the worker was also retrying an
+  earlier test's pending transfer. Recovery's bank calls also consume chaos PRNG draws.
+  Tests that measure a global counter or depend on the PRNG sequence now call `quiesce()`
+  first (wait until no transfer is in flight). M7 must do the same around baselines.
+- The late-apply test has to wait for the late requests themselves (about 71 s after
+  creation), not just for the transfer's final state. Otherwise "never applied after
+  voided" is only proven for the requests that arrived before the test ended.
+
+**Next action**
+- **M7 Chaos & invariants.** Read §16. Write `tests/helpers/invariants.ts`
+  (`snapshotBaseline()`, then I1–I7 against it), `ledgerClient.ts`, `killService`, then
+  `scripts/checkInvariants.ts` and the two `tests/chaos` files.
+
+**Open questions**
+- None.

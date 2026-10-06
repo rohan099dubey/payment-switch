@@ -7,8 +7,10 @@ import { loadOrchestratorConfig } from './config';
 import { policyFromConfig } from './domain/policy';
 import { createTransferHandlers } from './grpc/handlers';
 import { startGrpcServer } from './grpc/server';
-import { createOrchestratorMetrics, sagaObserver } from './metrics';
-import { createTransferStore } from './repo/transfersRepo';
+import { SagaEngine, type SagaDeps } from './domain/saga';
+import { createOrchestratorMetrics, recoveryObserver, sagaObserver } from './metrics';
+import { RecoveryWorker } from './recovery/worker';
+import { createRecoveryStore, createTransferStore } from './repo/transfersRepo';
 
 /** Section 6, Shutdown: wait up to 10 seconds for inline sagas. */
 const SHUTDOWN_GRACE_MS = 10_000;
@@ -28,18 +30,20 @@ async function main(): Promise<void> {
   const ledger = createLedgerClient(config.LEDGER_ADDR);
   const policy = policyFromConfig(config);
 
+  const sagaDeps: Omit<SagaDeps, 'logger'> = {
+    store: createTransferStore(pool),
+    bank: createBankPort(banks),
+    ledger: createLedgerPort(ledger),
+    policy,
+    clock: { now: () => Date.now() },
+    observer: sagaObserver(metrics),
+  };
+
   const grpcServer = await startGrpcServer(
     createTransferHandlers({
       pool,
       instrument,
-      saga: {
-        store: createTransferStore(pool),
-        bank: createBankPort(banks),
-        ledger: createLedgerPort(ledger),
-        policy,
-        clock: { now: () => Date.now() },
-        observer: sagaObserver(metrics),
-      },
+      saga: sagaDeps,
       knownBank: (bankId) => banks.has(bankId),
       instanceId: config.INSTANCE_ID,
       maxAmount: config.MAX_TRANSFER_AMOUNT,
@@ -58,6 +62,23 @@ async function main(): Promise<void> {
       return true;
     },
   });
+  const recoveryLogger = logger.child({ component: 'recovery' });
+  const recovery = new RecoveryWorker({
+    store: createRecoveryStore(pool),
+    saga: new SagaEngine({ ...sagaDeps, logger: recoveryLogger }),
+    config: {
+      pollMs: config.RECOVERY_POLL_MS,
+      batch: config.RECOVERY_BATCH,
+      concurrency: config.RECOVERY_CONCURRENCY,
+      leaseMs: config.LEASE_MS,
+      resolveAfterAttempts: config.RESOLVE_AFTER_ATTEMPTS,
+      maxRecoveryAttempts: config.MAX_RECOVERY_ATTEMPTS,
+    },
+    instanceId: config.INSTANCE_ID,
+    logger: recoveryLogger,
+    observer: recoveryObserver(metrics),
+  });
+  recovery.start();
   logger.info(
     { grpc_port: grpcServer.port, http_port: config.HTTP_PORT, banks: banks.bankIds, ledger: config.LEDGER_ADDR },
     'orchestrator started',
@@ -72,6 +93,8 @@ async function main(): Promise<void> {
       // Stop accepting calls and let inline sagas finish. Anything still unfinished
       // keeps its *_SENT intent and is picked up after its lease expires.
       await grpcServer.shutdown(SHUTDOWN_GRACE_MS);
+      // Then stop the recovery loop, letting the batch in progress finish within the grace.
+      await recovery.stop(SHUTDOWN_GRACE_MS);
       await health.close();
       banks.close();
       ledger.close();

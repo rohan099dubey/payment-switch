@@ -16,7 +16,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M3 | Orchestrator core | `DONE` | 6, 11, 13, 14 | 2026-10-06 | see `git log --grep "M3"` |
 | M4 | Gateway | `DONE` | 5, 14 | 2026-10-06 | see `git log --grep "M4"` |
 | M5 | Idempotency & unknown outcomes | `DONE` | 6, 12 | 2026-10-06 | see `git log --grep "M5"` |
-| M6 | Recovery | `NOT_STARTED` | 6, 13 | — | — |
+| M6 | Recovery | `DONE` | 6, 13 | 2026-10-06 | see `git log --grep "M6"` |
 | M7 | Chaos & invariants | `NOT_STARTED` | 16 | — | — |
 | M8 | Load & metrics | `NOT_STARTED` | 16, 17 | — | — |
 | M9 | Polish | `NOT_STARTED` | 17, 20 | — | — |
@@ -226,29 +226,30 @@ Acceptance — `tests/integration/idempotency.test.ts` (14; a mutation run with 
 ## M6 — Recovery
 
 **Scope:** recovery worker, leases, claim query, `Resolve` path, backoff, manual review.
+Unspecified details: `ADR-020`.
 
-- [ ] `recovery/worker.ts` polling every `RECOVERY_POLL_MS`
-- [ ] Claim query exactly as spec §13 (`FOR UPDATE SKIP LOCKED`, lease free)
-- [ ] Batch `RECOVERY_BATCH` (20), concurrency `RECOVERY_CONCURRENCY` (5)
-- [ ] `*_SENT` with `attempts < RESOLVE_AFTER_ATTEMPTS` re-runs the idempotent step
-- [ ] `*_SENT` with `attempts >= RESOLVE_AFTER_ATTEMPTS` calls `Resolve`
-- [ ] `Resolve` `APPLIED` posts the leg journal then advances
-- [ ] `Resolve` `VOIDED` goes to `FAILED` / `DEBIT_NOT_CONFIRMED` or `REVERSING` / `CREDIT_NOT_CONFIRMED`
-- [ ] `REVERSING` is never abandoned and never resolved by voiding
-- [ ] `MAX_RECOVERY_ATTEMPTS` (20) moves to `NEEDS_MANUAL_REVIEW` / `RECOVERY_EXHAUSTED`
-- [ ] Backoff `min(1000 * 2^attempts, 60000)` plus up to 20% jitter
-- [ ] `transfers_in_flight` gauge refreshed every loop
-- [ ] Metrics `recovery_runs_total{result}`, `manual_review_total{reason}`
+- [x] `recovery/worker.ts` polling every `RECOVERY_POLL_MS`
+- [x] Claim query exactly as spec §13 (`FOR UPDATE SKIP LOCKED`, lease free)
+- [x] Batch `RECOVERY_BATCH` (20), concurrency `RECOVERY_CONCURRENCY` (5)
+- [x] `*_SENT` with `attempts < RESOLVE_AFTER_ATTEMPTS` re-runs the idempotent step
+- [x] `*_SENT` with `attempts >= RESOLVE_AFTER_ATTEMPTS` calls `Resolve`
+- [x] `Resolve` `APPLIED` posts the leg journal then advances
+- [x] `Resolve` `VOIDED` goes to `FAILED` / `DEBIT_NOT_CONFIRMED` or `REVERSING` / `CREDIT_NOT_CONFIRMED`
+- [x] `REVERSING` is never abandoned and never resolved by voiding
+- [x] `MAX_RECOVERY_ATTEMPTS` (20) moves to `NEEDS_MANUAL_REVIEW` / `RECOVERY_EXHAUSTED`
+- [x] Backoff `min(1000 * 2^attempts, 60000)` plus up to 20% jitter
+- [x] `transfers_in_flight` gauge refreshed every loop
+- [x] Metrics `recovery_runs_total{result}`, `manual_review_total{reason}`
 
-Acceptance — `failurePaths` integration tests
-- [ ] A bank set `down` for a few seconds still reaches `SUCCESS` once it returns
-- [ ] The Ledger stopped then restarted leaves transfers pending, then they complete
-- [ ] `late_apply_rate = 1` never leaves a transfer applied after being voided
-- [ ] An Orchestrator kill mid-transfer is recovered by another instance after lease expiry
-- [ ] Insufficient funds still gives `FAILED`
-- [ ] A missing payee still gives `REVERSED` with the payer refunded
-- [ ] (moved from M5, `ADR-010`) `lost_response_rate = 1` still ends in `SUCCESS` with exactly one debit
-- [ ] (from M4/M5) the `DEBIT_SENT` transfers left by the 202 tests (payer bank `down`) are finished by recovery
+Acceptance — `tests/integration/failurePaths.test.ts` (8, ~3 min) + `services/orchestrator/test/recovery` (39) + `metrics.test.ts`
+- [x] A bank set `down` for a few seconds still reaches `SUCCESS` once it returns
+- [x] The Ledger stopped then restarted leaves transfers pending, then they complete
+- [x] `late_apply_rate = 1` never leaves a transfer applied after being voided
+- [x] An Orchestrator kill mid-transfer is recovered by another instance after lease expiry
+- [x] Insufficient funds still gives `FAILED`
+- [x] A missing payee still gives `REVERSED` with the payer refunded
+- [x] (moved from M5, `ADR-010`) `lost_response_rate = 1` still ends in `SUCCESS` with exactly one debit
+- [x] (from M4/M5) the `DEBIT_SENT` transfers left by the 202 tests (payer bank `down`) are finished by recovery
 
 ## M7 — Chaos & invariants
 

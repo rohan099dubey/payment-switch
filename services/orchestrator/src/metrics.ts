@@ -1,6 +1,7 @@
-import { collectDefaultMetrics, Counter, Histogram, type Registry } from 'prom-client';
+import { collectDefaultMetrics, Counter, Gauge, Histogram, type Registry } from 'prom-client';
 import type { SagaObserver } from './domain/saga';
 import { TransferState } from './domain/states';
+import type { RecoveryObserver } from './recovery/worker';
 
 export interface OrchestratorMetrics {
   transfersTotal: Counter<'final_state'>;
@@ -11,9 +12,13 @@ export interface OrchestratorMetrics {
   downstreamCalls: Counter<'target' | 'operation' | 'outcome'>;
   /** The alert metric for scenario 14. `reason` is the failure code. */
   manualReview: Counter<'reason'>;
+  /** `result`: advanced, yielded, resolved_applied, resolved_voided, exhausted. */
+  recoveryRuns: Counter<'result'>;
+  /** Non-terminal transfers by state, refreshed every recovery loop. */
+  transfersInFlight: Gauge<'state'>;
 }
 
-/** Orchestrator metrics from spec section 17 (the recovery ones arrive with M6). */
+/** Orchestrator metrics from spec section 17. */
 export function createOrchestratorMetrics(registry: Registry): OrchestratorMetrics {
   collectDefaultMetrics({ register: registry });
   return {
@@ -49,6 +54,18 @@ export function createOrchestratorMetrics(registry: Registry): OrchestratorMetri
       labelNames: ['reason'] as const,
       registers: [registry],
     }),
+    recoveryRuns: new Counter({
+      name: 'recovery_runs_total',
+      help: 'Transfers driven by the recovery worker, by result',
+      labelNames: ['result'] as const,
+      registers: [registry],
+    }),
+    transfersInFlight: new Gauge({
+      name: 'transfers_in_flight',
+      help: 'Non-terminal transfers by state, refreshed every recovery loop',
+      labelNames: ['state'] as const,
+      registers: [registry],
+    }),
   };
 }
 
@@ -66,6 +83,17 @@ export function sagaObserver(metrics: OrchestratorMetrics): SagaObserver {
       if (transfer.state === TransferState.NEEDS_MANUAL_REVIEW) {
         metrics.manualReview.inc({ reason: transfer.failureCode ?? 'UNKNOWN' });
       }
+    },
+  };
+}
+
+export function recoveryObserver(metrics: OrchestratorMetrics): RecoveryObserver {
+  return {
+    run: (result) => {
+      metrics.recoveryRuns.inc({ result });
+    },
+    inFlight: (counts) => {
+      for (const [state, n] of counts) metrics.transfersInFlight.set({ state }, n);
     },
   };
 }

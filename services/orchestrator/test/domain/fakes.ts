@@ -13,6 +13,7 @@ import type {
   DownstreamOutcome,
   JournalLeg,
   LedgerPort,
+  Resolution,
   SagaObserver,
   SagaStep,
   SagaStore,
@@ -128,7 +129,8 @@ export class FakeStore implements SagaStore {
 }
 
 /** What one fake downstream call does: answer, throw, or take time first. */
-export type Script = { ok: true; txnId?: string; applied?: boolean } | { error: unknown } | { hang: true };
+export type Script =
+  { ok: true; txnId?: string; applied?: boolean } | { resolved: Resolution } | { error: unknown } | { hang: true };
 
 export const ok = (txnId = 'txn'): Script => ({ ok: true, txnId });
 export const fail = (code: Status, errorCode: string): Script => ({
@@ -169,7 +171,10 @@ export class FakeDownstream {
     private readonly timeline: TimelineEntry[],
   ) {}
 
-  script(name: 'Debit' | 'Credit' | 'ReverseDebit' | `PostJournal:${JournalLeg}`, ...answers: Script[]): this {
+  script(
+    name: 'Debit' | 'Credit' | 'ReverseDebit' | 'Resolve:DEBIT' | 'Resolve:CREDIT' | `PostJournal:${JournalLeg}`,
+    ...answers: Script[]
+  ): this {
     this.scripts.set(name, [...(this.scripts.get(name) ?? []), ...answers]);
     return this;
   }
@@ -178,7 +183,10 @@ export class FakeDownstream {
     return this.calls.filter((c) => c.name === name);
   }
 
-  private async run(name: string, options: CallOptions): Promise<{ txnId: string; applied: boolean }> {
+  private async run(
+    name: string,
+    options: CallOptions,
+  ): Promise<{ txnId: string; applied: boolean; resolved: Resolution }> {
     this.calls.push({ name, timeoutMs: options.timeoutMs, requestId: options.requestId });
     this.timeline.push({ kind: 'call', name, stateAtCall: this.store().row.state });
     const next = this.scripts.get(name)?.shift() ?? ok();
@@ -187,7 +195,8 @@ export class FakeDownstream {
       throw makeGrpcError(Status.DEADLINE_EXCEEDED, 'DEADLINE', 'Deadline exceeded');
     }
     if ('error' in next) throw next.error;
-    return { txnId: next.txnId ?? 'txn', applied: next.applied ?? true };
+    if ('resolved' in next) return { txnId: 'txn', applied: true, resolved: next.resolved };
+    return { txnId: next.txnId ?? 'txn', applied: next.applied ?? true, resolved: 'APPLIED' };
   }
 
   bank(): BankPort {
@@ -199,6 +208,7 @@ export class FakeDownstream {
       debit: (_t, o) => receipt('Debit', o),
       credit: (_t, o) => receipt('Credit', o),
       reverseDebit: (_t, o) => receipt('ReverseDebit', o),
+      resolve: async (_t, operation, o) => (await this.run(`Resolve:${operation}`, o)).resolved,
     };
   }
 
