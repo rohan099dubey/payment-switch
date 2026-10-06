@@ -16,9 +16,9 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **M8 — Load & metrics** (not started). M0–M7 are `DONE`. |
-| **Next action** | `scripts/seed.ts` (`npm run seed -- --load`: `L0001`–`L0200` per bank), then `load/transfer.k6.js`; numbers go only into `docs/benchmarks.md`, measured. Afterwards run `npm run invariants -- --since <load start>` (ADR-021) |
-| **Read first for M8** | `ARCHITECTURE.md` sections 16 (load test), 17 |
+| **Active milestone** | **M9 — Polish** (not started). M0–M8 are `DONE`. |
+| **Next action** | README: all 8 sections in §17 order, quick start with `npm run seed`, numbers only from `docs/benchmarks.md`; render the five diagrams; CI `integration` and `nightly` jobs |
+| **Read first for M9** | `ARCHITECTURE.md` sections 17, 20 |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
@@ -144,6 +144,7 @@ Computed against a baseline snapshot taken before each run.
 | Inline saga budget is a **hard bound**: each call's deadline is `min(per-call timeout, budget left)`, no attempt with < 100 ms left, retry sleeps capped at the deadline | `ADR-010` |
 | Ledger maps its own trigger/CHECK rejections (`P0001`, `23514`) to `FAILED_PRECONDITION` / `LEDGER_INVARIANT_VIOLATION` (was `INTERNAL`) | `ADR-017` |
 | **`@fastify/jwt` 10.2.2**, not v9 (v9's `fast-jwt` has critical advisories); Gateway details | `ADR-019` |
+| Load test spread over the four dev API clients (per-client rate limit); demo seed `ACC001`–`ACC005`; k6 v2.2.0 via winget | `ADR-022` |
 | Chaos tests: invariants scoped to a baseline / key prefix; `npm run invariants` scoped per transfer (`--since`); a request that gave up during a restart is resent later | `ADR-021` |
 | Recovery: `Resolve` lives in `SagaEngine.settle`, the lease is renewed before each drive, events record `driver` + `lease_owner` | `ADR-020` |
 | Orchestrator: CAS also matches `state`; unrecognised bank errors are `BANK_INVARIANT_VIOLATION`; `INVALID_REQUEST`/`TRANSFER_NOT_FOUND` codes; extra startup checks | `ADR-018` |
