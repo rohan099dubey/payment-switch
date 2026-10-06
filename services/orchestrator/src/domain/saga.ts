@@ -22,6 +22,21 @@ export interface BankPort {
   debit: (transfer: Transfer, options: CallOptions) => Promise<BankReceipt>;
   credit: (transfer: Transfer, options: CallOptions) => Promise<BankReceipt>;
   reverseDebit: (transfer: Transfer, options: CallOptions) => Promise<BankReceipt>;
+  /**
+   * `Resolve(reference_id = transfer id, operation)` on the bank that owns that leg: the
+   * payer's for `DEBIT`, the payee's for `CREDIT`. `INVALID` is any answer other than
+   * `APPLIED` or `VOIDED` (the bank promises never to say `NOT_FOUND`).
+   */
+  resolve: (transfer: Transfer, operation: ResolveOperation, options: CallOptions) => Promise<Resolution>;
+}
+
+export type ResolveOperation = 'DEBIT' | 'CREDIT';
+export type Resolution = 'APPLIED' | 'VOIDED' | 'INVALID';
+
+/** What `settle` decided, for `recovery_runs_total`. `null`: no answer from the bank (yielded). */
+export interface SettleOutcome {
+  transfer: Transfer;
+  resolution: Resolution | null;
 }
 
 export type JournalLeg = 'debit-leg' | 'credit-leg' | 'reversal';
@@ -90,6 +105,9 @@ type StepResult =
   | { kind: 'definite'; code: FailureCode; message: string; detail: Record<string, unknown> }
   | { kind: 'bug'; code: FailureCode; message: string; detail: Record<string, unknown> }
   | { kind: 'unknown'; message: string; detail: Record<string, unknown> };
+
+/** A step that did not succeed: what `bankFailure` can produce. */
+type FailedStep = Exclude<StepResult, { kind: 'ok' }>;
 
 type CallResult<T> = { ok: true; value: T } | { ok: false; errorClass: ErrorClass; err: unknown };
 
@@ -172,14 +190,122 @@ export class SagaEngine {
       }
       return t;
     } catch (err) {
-      if (!(err instanceof StaleTransferError)) throw err;
       // Another driver owns the transfer now. Stop, do not retry the write.
-      this.deps.logger.warn(
-        { transfer_id: t.id, state: t.state, version: t.version },
-        'lost the transfer to another driver; stopped',
-      );
-      return (await this.deps.store.getTransfer(t.id)) ?? t;
+      return this.stale(err, t);
     }
+  }
+
+  /**
+   * Settles an unknown `*_SENT` outcome with the bank's `Resolve` (section 6, recovery
+   * step 2), then carries on with `advance`. `APPLIED`: post that leg's journal, CAS to
+   * `DEBITED` / `CREDITED`. `VOIDED`: `FAILED` / `DEBIT_NOT_CONFIRMED` from `DEBIT_SENT`,
+   * `REVERSING` / `CREDIT_NOT_CONFIRMED` from `CREDIT_SENT`. No answer: yield. Once
+   * `Resolve` answers, the answer never changes, so repeating this is safe.
+   */
+  async settle(transfer: Transfer, ctx: SagaContext): Promise<SettleOutcome> {
+    const t = transfer;
+    if (t.state !== TransferState.DEBIT_SENT && t.state !== TransferState.CREDIT_SENT) {
+      throw new Error(`settle: transfer ${t.id} is ${t.state}, not DEBIT_SENT or CREDIT_SENT`);
+    }
+    const debit = t.state === TransferState.DEBIT_SENT;
+    const operation: ResolveOperation = debit ? 'DEBIT' : 'CREDIT';
+    const bankId = debit ? t.payer.bankId : t.payee.bankId;
+    try {
+      const resolved = await this.call(
+        t,
+        {
+          target: 'bank',
+          operation: 'Resolve',
+          bankId,
+          step: debit ? 'debit' : 'credit',
+          attempts: this.deps.policy.bankAttempts,
+          timeoutMs: this.deps.policy.bankCallTimeoutMs,
+        },
+        ctx,
+        (o) => this.deps.bank.resolve(t, operation, o),
+      );
+      if (!resolved.ok) {
+        const r = bankFailure(resolved, () => null, { bank_id: bankId, operation });
+        if (r.kind === 'unknown') return { transfer: await this.yield(t, ctx, r), resolution: null };
+        return { transfer: await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx), resolution: null };
+      }
+
+      const base = { bank_id: bankId, operation, resolution: resolved.value };
+      switch (resolved.value) {
+        case 'APPLIED': {
+          const leg = await this.ledgerLeg(t, debit ? 'debit-leg' : 'credit-leg', ctx, base);
+          if (leg.kind === 'unknown') return { transfer: await this.yield(t, ctx, leg), resolution: 'APPLIED' };
+          if (leg.kind !== 'ok') {
+            const rejected = await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, leg, ctx);
+            return { transfer: rejected, resolution: 'APPLIED' };
+          }
+          const confirmed = await this.cas(t, debit ? TransferState.DEBITED : TransferState.CREDITED, ctx, {
+            reason: debit ? 'DEBIT_CONFIRMED_BY_RESOLVE' : 'CREDIT_CONFIRMED_BY_RESOLVE',
+            detail: leg.detail,
+          });
+          return { transfer: await this.advance(confirmed, ctx), resolution: 'APPLIED' };
+        }
+        case 'VOIDED': {
+          const code = debit ? FailureCode.DEBIT_NOT_CONFIRMED : FailureCode.CREDIT_NOT_CONFIRMED;
+          const message = `${operation.toLowerCase()} not confirmed: Resolve voided reference ${t.id}`;
+          const failed = await this.fail(
+            t,
+            debit ? TransferState.FAILED : TransferState.REVERSING,
+            {
+              code,
+              message,
+              detail: base,
+            },
+            ctx,
+          );
+          return { transfer: await this.advance(failed, ctx), resolution: 'VOIDED' };
+        }
+        case 'INVALID':
+          return {
+            transfer: await this.fail(
+              t,
+              TransferState.NEEDS_MANUAL_REVIEW,
+              {
+                code: FailureCode.BANK_INVARIANT_VIOLATION,
+                message: 'Resolve answered neither APPLIED nor VOIDED',
+                detail: base,
+              },
+              ctx,
+            ),
+            resolution: 'INVALID',
+          };
+      }
+    } catch (err) {
+      return { transfer: await this.stale(err, t), resolution: null };
+    }
+  }
+
+  /** `MAX_RECOVERY_ATTEMPTS` used up: `NEEDS_MANUAL_REVIEW` / `RECOVERY_EXHAUSTED` (section 6, step 3). */
+  async exhaust(transfer: Transfer, ctx: SagaContext): Promise<Transfer> {
+    try {
+      return await this.fail(
+        transfer,
+        TransferState.NEEDS_MANUAL_REVIEW,
+        {
+          code: FailureCode.RECOVERY_EXHAUSTED,
+          message: `recovery gave up after ${transfer.attempts} attempts in ${transfer.state}`,
+          detail: { attempts: transfer.attempts, state: transfer.state },
+        },
+        ctx,
+      );
+    } catch (err) {
+      return this.stale(err, transfer);
+    }
+  }
+
+  /** A `StaleTransferError` means another driver owns the transfer: stop and return the row. */
+  private async stale(err: unknown, t: Transfer): Promise<Transfer> {
+    if (!(err instanceof StaleTransferError)) throw err;
+    this.deps.logger.warn(
+      { transfer_id: t.id, state: t.state, version: t.version },
+      'lost the transfer to another driver; stopped',
+    );
+    return (await this.deps.store.getTransfer(t.id)) ?? t;
   }
 
   // ---------------------------------------------------------------- steps
@@ -358,8 +484,13 @@ export class SagaEngine {
   }
 
   private async cas(t: Transfer, to: TransferState, ctx: SagaContext, options: TransitionOptions): Promise<Transfer> {
-    const detail =
-      ctx.requestId === undefined ? (options.detail ?? {}) : { ...options.detail, request_id: ctx.requestId };
+    // Every event records who drove it: inline (with the request id) or recovery, and the lease.
+    const detail = {
+      ...options.detail,
+      driver: ctx.mode,
+      lease_owner: ctx.leaseOwner,
+      ...(ctx.requestId === undefined ? {} : { request_id: ctx.requestId }),
+    };
     const updated = await transition(
       { store: this.deps.store, leaseMs: this.deps.policy.leaseMs, logger: this.deps.logger },
       t,
@@ -436,7 +567,7 @@ function bankFailure(
   result: { errorClass: ErrorClass; err: unknown },
   failureCodeOf: (bankErrorCode: string | undefined) => FailureCode | null,
   base: Record<string, unknown>,
-): StepResult {
+): FailedStep {
   const message = errorMessage(result.err);
   const detail = { ...base, ...errorDetail(result.err) };
   switch (result.errorClass) {

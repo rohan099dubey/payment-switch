@@ -16,9 +16,9 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **M6 — Recovery** (not started). M0–M5 are `DONE`. |
-| **Next action** | `services/orchestrator/src/recovery/worker.ts`: the claim loop with `claimDue` (already in `repo/transfersRepo.ts`, verbatim §13), then `Resolve` for `*_SENT` at `attempts >= 3`. `SagaEngine.advance` already accepts `mode: 'recovery'` |
-| **Read first for M6** | `ARCHITECTURE.md` sections 6, 13 |
+| **Active milestone** | **M7 — Chaos & invariants** (not started). M0–M6 are `DONE`. |
+| **Next action** | `tests/helpers/invariants.ts` (`snapshotBaseline()` + one function per invariant, **scoped to the run's baseline**: a historical synthetic `NEEDS_MANUAL_REVIEW` row exists, see SESSION_LOG M6), `ledgerClient.ts`, `killService` in `stack.ts`; then `scripts/checkInvariants.ts` |
+| **Read first for M7** | `ARCHITECTURE.md` section 16 |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
@@ -144,6 +144,7 @@ Computed against a baseline snapshot taken before each run.
 | Inline saga budget is a **hard bound**: each call's deadline is `min(per-call timeout, budget left)`, no attempt with < 100 ms left, retry sleeps capped at the deadline | `ADR-010` |
 | Ledger maps its own trigger/CHECK rejections (`P0001`, `23514`) to `FAILED_PRECONDITION` / `LEDGER_INVARIANT_VIOLATION` (was `INTERNAL`) | `ADR-017` |
 | **`@fastify/jwt` 10.2.2**, not v9 (v9's `fast-jwt` has critical advisories); Gateway details | `ADR-019` |
+| Recovery: `Resolve` lives in `SagaEngine.settle`, the lease is renewed before each drive, events record `driver` + `lease_owner` | `ADR-020` |
 | Orchestrator: CAS also matches `state`; unrecognised bank errors are `BANK_INVARIANT_VIOLATION`; `INVALID_REQUEST`/`TRANSFER_NOT_FOUND` codes; extra startup checks | `ADR-018` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
@@ -162,11 +163,10 @@ None. Both questions from M0–M2 were resolved in M3 (`ADR-010`, `ADR-017`). Tw
 from that resolution shape every later milestone:
 
 - **`202` is a normal outcome.** Integration tests pass the `CreateTransfer` response to
-  `awaitTerminal` (`tests/helpers/transfers.ts`), which polls `GetTransfer`. Before M6 a
-  yielded transfer never progresses, so with chaos off a yield fails the test.
-- **The `lost_response_rate = 1` criterion is now an M6 acceptance box** (moved from M5,
-  ADR-010 amendment). M6 also has to finish the `DEBIT_SENT` transfers that the 202 tests
-  leave behind (payer bank `down`, nothing debited).
+  `awaitTerminal` (`tests/helpers/transfers.ts`), which polls `GetTransfer`.
+- **Recovery is live (M6).** A 202 transfer is finished by the recovery worker within
+  seconds to minutes (backoff 2, 4, 8 s, then `Resolve`). Tests poll for a terminal state;
+  none may assume a non-terminal transfer *stays* non-terminal.
 
 **Shape notes from M3:** `SagaEngine.advance(transfer, {mode, deadline?, leaseOwner,
 requestId?})` already handles inline retries and `yield` (section 6 pseudocode), so M5

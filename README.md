@@ -144,6 +144,13 @@ looking — that is what makes the project safe to put on a resume.)*
 4. A replay never drives a transfer; only its owner or the recovery worker does. Every state change records the request that caused it, and a test checks that no state change ever carries the replay's request id.
 5. A timeout isn't a failure. Unknown outcomes are retried inline with the same idempotent request, and if that runs out the transfer is handed to recovery with backoff, never failed. Six planted bugs in this logic were each caught by a test.
 
+**M6 — Recovery**
+1. Every Orchestrator runs a recovery loop that claims stuck transfers with `FOR UPDATE SKIP LOCKED` under a time-limited lease, so several instances share the work and no two drive the same transfer.
+2. After three failed attempts the switch stops guessing and asks the bank's `Resolve`, which gives a final answer: applied, so continue, or voided, so fail or refund. A reversal is never voided; it is retried until it works.
+3. The tombstone race is proven for real: debits held 45 seconds at the bank arrive after `Resolve` voided them, all nine are refused, and the payer's balance never moves.
+4. A SIGKILLed Orchestrator mid-transfer is finished by a second instance, and only after the dead one's lease expired. Every state change records which driver and lease made it.
+5. Recovery has a budget: 20 attempts, then manual review with an alert metric. Transfers from earlier test runs left mid-debit were all completed with exactly one debit, one credit and both ledger legs.
+
 ---
 
 ## Using the API: idempotency rules for clients

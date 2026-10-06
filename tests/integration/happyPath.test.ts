@@ -187,7 +187,7 @@ describe('happyPath — business failures are 422, not errors', () => {
 });
 
 describe('happyPath — 202 when the saga cannot finish inline (ADR-010)', () => {
-  it('payer bank down: 202 PENDING with Location; GET and replay both say PENDING; no money moved', async () => {
+  it('payer bank down: 202 PENDING with Location; GET and replay say PENDING; recovery then finishes it once', async () => {
     const payer = await account('bank_a', 50_000n);
     const payee = await account('bank_b', 0n);
     const startup = await banks.getChaos('bank_a');
@@ -216,9 +216,17 @@ describe('happyPath — 202 when the saga cannot finish inline (ADR-010)', () =>
     } finally {
       await banks.setChaos('bank_a', startup);
     }
-    // Nothing reached the bank. Until M6's recovery worker exists this transfer stays
-    // DEBIT_SENT; recovery will retry the debit (now succeeding) or void it via Resolve.
-    await sleep(100);
-    expect(await banks.balance('bank_a', payer)).toBe(50_000n);
+    // M6: with the bank back, the recovery worker retries the idempotent debit and
+    // finishes the transfer. The 202 resolves to SUCCEEDED with exactly one debit.
+    const id = idOf(res);
+    let final = await client.getTransfer(id);
+    for (let i = 0; i < 120 && final.body.status === 'PENDING'; i++) {
+      await sleep(250);
+      final = await client.getTransfer(id);
+    }
+    expect(final.body).toMatchObject({ id, status: 'SUCCEEDED', state: 'SUCCESS' });
+    expect(await banks.balance('bank_a', payer)).toBe(37_500n);
+    expect(await banks.balance('bank_b', payee)).toBe(12_500n);
+    expect(await journalKinds(id)).toEqual(['TRANSFER_DEBIT_LEG', 'TRANSFER_CREDIT_LEG']);
   });
 });

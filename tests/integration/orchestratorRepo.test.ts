@@ -36,6 +36,14 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
+  // Hand this run's synthetic rows to the live recovery worker (M6). Their payer does not
+  // exist at the bank, so recovery fails them (PAYER_ACCOUNT_NOT_FOUND) without moving
+  // money, and nothing is left non-terminal.
+  await pool.query(
+    `UPDATE transfers SET next_attempt_at = now()
+      WHERE client_id LIKE $1 AND state NOT IN ('SUCCESS','FAILED','REVERSED','NEEDS_MANUAL_REVIEW')`,
+    [`m3repo-${RUN}-%`],
+  );
   await pool.end();
 });
 
@@ -44,8 +52,9 @@ function newTransfer(overrides: Partial<NewTransfer> = {}): NewTransfer {
     clientId: uniqueId('client'),
     idempotencyKey: uniqueId('key'),
     requestHash: 'h'.repeat(64),
-    payer: { bankId: 'bank_a', accountId: 'A1' },
-    payee: { bankId: 'bank_b', accountId: 'B1' },
+    // Accounts that exist at no bank: if recovery ever drives these rows, it fails them.
+    payer: { bankId: 'bank_a', accountId: `m3repo-${RUN}-no-such-payer` },
+    payee: { bankId: 'bank_b', accountId: `m3repo-${RUN}-no-such-payee` },
     amount: 12_500n,
     currency: 'INR',
     note: null,
@@ -56,7 +65,10 @@ function newTransfer(overrides: Partial<NewTransfer> = {}): NewTransfer {
 async function created(owner = uniqueId('owner')): Promise<{ t: Transfer; owner: string }> {
   const outcome = await insertTransfer(pool, newTransfer(), owner, LEASE_MS);
   if (outcome.status !== 'created') throw new Error('expected a new transfer');
-  return { t: outcome.transfer, owner };
+  // Parked: the recovery worker (M6) never claims a row whose next_attempt_at is in the
+  // future, so tests that expire or release a lease cannot race it. Released in afterAll.
+  await pool.query("UPDATE transfers SET next_attempt_at = 'infinity' WHERE id = $1", [outcome.transfer.id]);
+  return { t: { ...outcome.transfer, nextAttemptAt: new Date(8.64e15) }, owner };
 }
 
 function cas(t: Transfer, to: TransferState, owner: string, extra: Partial<CasRequest> = {}): CasRequest {
@@ -172,7 +184,9 @@ describe('casTransition (section 13 compare-and-set)', () => {
     const results = await Promise.all([
       casTransition(pool, cas(t, TransferState.DEBIT_SENT, owner)),
       casTransition(pool, cas(t, TransferState.DEBIT_SENT, owner)),
-      casTransition(pool, cas(t, TransferState.NEEDS_MANUAL_REVIEW, owner)),
+      // Same target for all three: a NEEDS_MANUAL_REVIEW winner would leave a synthetic
+      // manual-review row behind, and invariant I6 (M7) requires zero of those.
+      casTransition(pool, cas(t, TransferState.DEBIT_SENT, owner)),
     ]);
     expect(results.filter((r) => r !== null)).toHaveLength(1);
     expect(await listEvents(pool, t.id)).toHaveLength(2);

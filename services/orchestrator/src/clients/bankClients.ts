@@ -1,6 +1,11 @@
 import { callUnary, makeClient } from '@switch/common';
-import { BankServiceClient, OperationStatus, type MoneyOperationResponse } from '@switch/proto-gen/bank/v1';
-import type { BankPort, BankReceipt, CallOptions } from '../domain/saga';
+import {
+  BankServiceClient,
+  OperationStatus,
+  OperationType,
+  type MoneyOperationResponse,
+} from '@switch/proto-gen/bank/v1';
+import type { BankPort, BankReceipt, CallOptions, Resolution } from '../domain/saga';
 import type { Transfer } from '../domain/transfer';
 
 /** One `BankServiceClient` per `bank_id` in `BANK_ENDPOINTS` (spec section 6). */
@@ -67,6 +72,25 @@ export function createBankPort(banks: BankClients): BankPort {
     reverseDebit: async (t: Transfer, options: CallOptions) => {
       const client = banks.get(t.payer.bankId);
       return receipt(await callUnary(client.reverseDebit.bind(client), { referenceId: t.id }, options));
+    },
+    resolve: async (t: Transfer, operation, options: CallOptions): Promise<Resolution> => {
+      const client = banks.get(operation === 'DEBIT' ? t.payer.bankId : t.payee.bankId);
+      const response = await callUnary(
+        client.resolve.bind(client),
+        {
+          referenceId: t.id,
+          operation: operation === 'DEBIT' ? OperationType.OPERATION_TYPE_DEBIT : OperationType.OPERATION_TYPE_CREDIT,
+        },
+        options,
+      );
+      switch (response.status) {
+        case OperationStatus.OPERATION_STATUS_APPLIED:
+          return 'APPLIED';
+        case OperationStatus.OPERATION_STATUS_VOIDED:
+          return 'VOIDED';
+        default:
+          return 'INVALID';
+      }
     },
   };
 }

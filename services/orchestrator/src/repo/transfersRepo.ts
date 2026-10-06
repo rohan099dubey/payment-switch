@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import { NON_TERMINAL_STATES, TransferState, isTransferState } from '../domain/states';
 import type { NewTransfer, Transfer } from '../domain/transfer';
 import type { SagaStore } from '../domain/saga';
+import type { RecoveryStore } from '../recovery/worker';
 import type { CasRequest } from '../domain/transitions';
 import { appendEvent } from './eventsRepo';
 
@@ -216,7 +217,41 @@ export async function releaseLease(db: Queryable, id: string, leaseOwner: string
   return result.rowCount === 1;
 }
 
-/** The recovery claim query, verbatim from spec section 13. Used by the M6 worker. */
+/**
+ * Extends a lease this driver still holds and that has not expired. The recovery worker
+ * calls it right before driving each claimed transfer: a batch is claimed at once, and a
+ * transfer near the end of the batch may wait long enough for its lease to lapse. Null
+ * means "not ours any more": do not drive it.
+ */
+export async function renewLease(
+  db: Queryable,
+  id: string,
+  leaseOwner: string,
+  leaseMs: number,
+): Promise<Transfer | null> {
+  const result = await db.query<TransferRow>(
+    `UPDATE transfers
+        SET lease_expires_at = ${nowPlusMs('$3')}
+      WHERE id = $1 AND lease_owner = $2 AND lease_expires_at > now()
+     RETURNING *`,
+    [id, leaseOwner, leaseMs],
+  );
+  const row = result.rows[0];
+  return row === undefined ? null : toTransfer(row);
+}
+
+/** Non-terminal transfers by state, for the `transfers_in_flight` gauge. Every state is present. */
+export async function countInFlight(db: Queryable): Promise<Map<TransferState, number>> {
+  const result = await db.query<{ state: string; n: number }>(
+    'SELECT state, count(*)::int AS n FROM transfers WHERE state = ANY($1::text[]) GROUP BY state',
+    [NON_TERMINAL_STATES],
+  );
+  const counts = new Map<TransferState, number>(NON_TERMINAL_STATES.map((s) => [s, 0]));
+  for (const row of result.rows) if (isTransferState(row.state)) counts.set(row.state, row.n);
+  return counts;
+}
+
+/** The recovery claim query, verbatim from spec section 13. */
 export async function claimDue(db: Queryable, leaseOwner: string, leaseMs: number, limit: number): Promise<Transfer[]> {
   const result = await db.query<TransferRow>(
     `UPDATE transfers
@@ -267,5 +302,15 @@ function toTransfer(row: TransferRow): Transfer {
     leaseExpiresAt: row.lease_expires_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+/** The recovery worker's persistence port, backed by this repo. */
+export function createRecoveryStore(pool: Pool): RecoveryStore {
+  return {
+    claimDue: (leaseOwner, leaseMs, limit) => claimDue(pool, leaseOwner, leaseMs, limit),
+    renewLease: (id, leaseOwner, leaseMs) => renewLease(pool, id, leaseOwner, leaseMs),
+    releaseLease: (id, leaseOwner) => releaseLease(pool, id, leaseOwner),
+    countInFlight: () => countInFlight(pool),
   };
 }
