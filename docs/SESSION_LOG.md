@@ -493,3 +493,90 @@ not mask another.
 
 **Open questions**
 - None.
+
+---
+
+## 2026-10-06 — Session 2 (continued) — M4 Gateway
+
+**Status at end:** M4 `DONE`, all 16 boxes ticked. Same session as M3. The owner said
+"continue" after M3, which (as in Session 1) overrides the one-milestone-per-session note.
+
+**Done**
+- `services/gateway` (`@switch/gateway`) in the §3 layout: `app.ts` (`buildApp(deps)`,
+  every dependency injected), `config`, `metrics`, `mappers`,
+  `plugins/{requestId,auth,rateLimit,errorHandler}`, `routes/{auth,transfers,health}`,
+  `clients/orchestratorClient`, `lua/tokenBucket.lua`, `main`. Compose service `gateway`
+  (waits for Redis and a healthy Orchestrator) with development `JWT_SECRET` / `API_CLIENTS`.
+- ADR-019: `@fastify/jwt` 10.2.2 instead of 9 (critical `fast-jwt` advisories), plus the
+  details §5 leaves open.
+- Unit tests: 147 in `services/gateway/test`, in-process via `app.inject` with a fake
+  Orchestrator, a fake limiter and a log sink.
+- Integration tests: `happyPath` (9), `validation` (16), `gateway` (8: the Lua script in
+  real Redis, 429s, Redis outage fails open, `/readyz` with Redis or the Orchestrator
+  stopped, metrics, a scan of the Gateway's docker logs for secrets).
+- Helpers: `tests/helpers/{gatewayClient,bankAdmin,stack}.ts` (partial M7 helpers).
+
+**Verification**
+```text
+npm run lint          -> eslint clean; "All matched files use Prettier code style!"
+npm run typecheck     -> exit 0
+npm test              -> Test Files 26 passed (26) / Tests 538 passed (538)
+npm run stack:up      -> 9/9 healthy (adds gateway)
+npm run test:integration -> Test Files 7 passed (7) / Tests 133 passed (133), ~35 s
+docker compose stop gateway -> "gateway shutting down" / "gateway stopped", exit=0
+npm audit             -> found 0 vulnerabilities (after the @fastify/jwt 10 switch)
+```
+
+**Mutation check.** Every mutant was caught.
+- Built copy on port 8180 (`GATEWAY_URL=http://localhost:8180`): a SUCCESS replay answers
+  201, the Idempotency-Key minimum drops to 1 character, GET is not rate limited. The
+  three failures were exactly the replay test (201 vs 200), the short-key test (422 vs
+  400) and the 429 test (0 rejections). Each mutant had a distinct assertion.
+- Source mutants, one at a time, against the unit suite: fail closed instead of open (1
+  failed), the secret is ignored for a known client (2), `sub` is not checked against
+  `API_CLIENTS` (1), `UNAVAILABLE` maps to 500 (3), the `Authorization` header is logged
+  (1). Sources were restored and the hashes checked.
+
+**Decisions**
+- **`@fastify/jwt` 10.2.2** (ADR-019 §1). `npm audit` flagged v9's `fast-jwt` with 2
+  critical advisories, including an auth bypass. v10 still targets Fastify 5.
+- **`buildApp(deps)` with ports**, mirroring the Orchestrator's saga. The whole HTTP
+  surface (auth, mapping, rate-limit hook, request ids, log content) is unit-tested with
+  no sockets; the integration tests then prove the real wiring.
+- **The rate limiter depends on a two-method `ScriptRunner` interface**, not on ioredis's
+  `Redis`. The fake in unit tests needs no cast, and ioredis satisfies it structurally.
+- **The `/readyz` and outage tests really stop containers** (`docker compose stop redis`
+  / `orchestrator`) and restore them in `finally` plus `afterAll`. Integration files run
+  one at a time, so no other file sees the outage.
+
+**Gotchas**
+- **`@fastify/jwt` reads a numeric `expiresIn` as seconds.** The first draft passed
+  `ttl * 1000`, which made tokens valid for 10 days. The unit test asserting
+  `exp = iat + 900` caught it.
+- **Fastify 5.12 deprecates `disableRequestLogging` and `requestIdLogLabel`** (FSTDEP023).
+  Use `logController: new LogController({...})`.
+- **ioredis defaults queue commands while disconnected**, so a Redis outage would hang
+  requests instead of failing open. It needs `enableOfflineQueue: false` and
+  `commandTimeout`.
+- **A stopped Compose container's DNS name stops resolving**, so gRPC calls to it wait
+  out their deadline (504) rather than failing fast (503). The test accepts either,
+  each with its correct mapping.
+- **A mutant run can poison a fixed test key.** The G4 mutant accepted the key `short` and
+  registered a real transfer (client `test-client-a`, key `short`, FAILED), which would
+  have made the "nothing registered" assertion fail forever. That key is now unique per
+  run. Never use fixed keys in assertions that a buggy run could falsify.
+- **Docker Desktop stopped between M3 and M4** (overnight). The first M4 integration run
+  failed on connections, not assertions. I relaunched it via
+  `Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"`.
+- The 202 test (payer bank `down`) leaves its transfer in `DEBIT_SENT` with nothing
+  debited. M6's recovery worker will retry the debit (bank up by then) and finish it.
+  Until M6, each integration run adds one such row.
+
+**Next action**
+- **M5 Idempotency & unknown outcomes.** Read §6 and §12. Most of the mechanism already
+  exists from M3, so M5 is mainly its acceptance tests through the Gateway. Use separate,
+  warmed connections for the 50 concurrent identical requests. Leave the
+  `lost_response_rate = 1` box for M6 (ADR-010).
+
+**Open questions**
+- None.

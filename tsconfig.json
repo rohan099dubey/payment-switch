@@ -10,6 +10,8 @@
     { "path": "services/mockBank/test" },
     { "path": "services/orchestrator" },
     { "path": "services/orchestrator/test" },
+    { "path": "services/gateway" },
+    { "path": "services/gateway/test" },
     { "path": "tests" }
   ]
 }

@@ -14,7 +14,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M1 | Ledger | `DONE` | 7, 10, 14 | 2026-10-05 | see `git log --grep "M1"` |
 | M2 | Mock Bank | `DONE` | 8, 10, 14 | 2026-10-05 | see `git log --grep "M2"` |
 | M3 | Orchestrator core | `DONE` | 6, 11, 13, 14 | 2026-10-06 | see `git log --grep "M3"` |
-| M4 | Gateway | `NOT_STARTED` | 5, 14 | — | — |
+| M4 | Gateway | `DONE` | 5, 14 | 2026-10-06 | see `git log --grep "M4"` |
 | M5 | Idempotency & unknown outcomes | `NOT_STARTED` | 6, 12 | — | — |
 | M6 | Recovery | `NOT_STARTED` | 6, 13 | — | — |
 | M7 | Chaos & invariants | `NOT_STARTED` | 16 | — | — |
@@ -184,26 +184,27 @@ Acceptance — `tests/integration/orchestrator.test.ts` (25) + `orchestratorRepo
 ## M4 — Gateway
 
 **Scope:** all endpoints, JWT auth, validation, error mapping, Redis rate limiter, readiness.
+Details and the `@fastify/jwt` 10 deviation: `ADR-019`.
 
 Implementation
-- [ ] `POST /v1/auth/token` with `crypto.timingSafeEqual` secret comparison
-- [ ] `POST /v1/transfers` — zod validation, unknown fields rejected
-- [ ] `GET /v1/transfers/{id}` — only the creating client can read it
-- [ ] `/healthz`, `/readyz`, `/metrics`
-- [ ] `plugins/requestId.ts`, `auth.ts`, `rateLimit.ts`, `errorHandler.ts`
-- [ ] `lua/tokenBucket.lua` run with `EVALSHA`, clock from Redis `TIME`
-- [ ] `mappers.ts` — the full gRPC-to-HTTP status table from spec §5
-- [ ] `client_id` always from the JWT `sub`, never from the body
-- [ ] Status code table: 201 / 200 replay / 422 / 202 with `Location` and `Idempotent-Replay`
-- [ ] Metrics `http_requests_total`, `http_request_duration_seconds`, `rate_limit_rejections_total`, `rate_limit_fail_open_total`
+- [x] `POST /v1/auth/token` with `crypto.timingSafeEqual` secret comparison
+- [x] `POST /v1/transfers` — zod validation, unknown fields rejected
+- [x] `GET /v1/transfers/{id}` — only the creating client can read it
+- [x] `/healthz`, `/readyz`, `/metrics`
+- [x] `plugins/requestId.ts`, `auth.ts`, `rateLimit.ts`, `errorHandler.ts`
+- [x] `lua/tokenBucket.lua` run with `EVALSHA`, clock from Redis `TIME`
+- [x] `mappers.ts` — the full gRPC-to-HTTP status table from spec §5
+- [x] `client_id` always from the JWT `sub`, never from the body
+- [x] Status code table: 201 / 200 replay / 422 / 202 with `Location` and `Idempotent-Replay`
+- [x] Metrics `http_requests_total`, `http_request_duration_seconds`, `rate_limit_rejections_total`, `rate_limit_fail_open_total`
 
-Acceptance
-- [ ] `happyPath` integration tests pass
-- [ ] `validation` integration tests pass
-- [ ] Rate limiting returns 429 with a `Retry-After` header
-- [ ] A Redis outage **fails open**, logs a warning, increments `rate_limit_fail_open_total`
-- [ ] `/readyz` returns 200 only when Redis answers and the Orchestrator channel is connected
-- [ ] No token, secret or full request body ever appears in a log line
+Acceptance — `tests/integration/{happyPath,validation,gateway}.test.ts` (9 + 16 + 8) + `services/gateway/test` (unit, 147)
+- [x] `happyPath` integration tests pass
+- [x] `validation` integration tests pass
+- [x] Rate limiting returns 429 with a `Retry-After` header
+- [x] A Redis outage **fails open**, logs a warning, increments `rate_limit_fail_open_total`
+- [x] `/readyz` returns 200 only when Redis answers and the Orchestrator channel is connected
+- [x] No token, secret or full request body ever appears in a log line
 
 ## M5 — Idempotency & unknown outcomes
 
@@ -252,8 +253,8 @@ Acceptance — `failurePaths` integration tests
 **Scope:** `tests/helpers/invariants.ts`, `crashRecovery` and `invariant` tests,
 `scripts/checkInvariants.ts`.
 
-- [ ] `tests/helpers/stack.ts` — readiness wait, `killService`, `startService`
-- [ ] `tests/helpers/gatewayClient.ts`, `bankAdmin.ts`, `ledgerClient.ts`
+- [ ] `tests/helpers/stack.ts` — readiness wait, `killService`, `startService` (M4 added `stopService`/`startService`/`waitFor`; `killService` is still missing)
+- [ ] `tests/helpers/gatewayClient.ts`, `bankAdmin.ts`, `ledgerClient.ts` (the first two were started in M4)
 - [ ] `tests/helpers/invariants.ts` — `snapshotBaseline()` plus one function per invariant
 - [ ] `scripts/checkInvariants.ts` runs I1–I6 against the live stack
 - [ ] `tests/chaos/crashRecovery.test.ts` per the 5 steps in spec §16

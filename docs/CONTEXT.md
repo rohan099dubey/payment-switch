@@ -16,9 +16,9 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **M4 — Gateway** (not started). M0, M1, M2, M3 are `DONE`. |
-| **Next action** | `services/gateway`: mirror the other services' layout, then `POST /v1/auth/token` and the gRPC-to-HTTP mapper (`202` + `Location` for a non-terminal transfer, per ADR-010) |
-| **Read first for M4** | `ARCHITECTURE.md` sections 5, 14 |
+| **Active milestone** | **M5 — Idempotency & unknown outcomes** (not started). M0–M4 are `DONE`. |
+| **Next action** | Verify what M3 already built (request hash, replay polling, inline retries, `yield`) with M5's acceptance tests through the Gateway: start with "50 concurrent identical requests" (separate warmed connections, M2 gotcha). Leave the `lost_response_rate = 1` box for M6 (ADR-010) |
+| **Read first for M5** | `ARCHITECTURE.md` sections 6, 12 |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
@@ -143,6 +143,7 @@ Computed against a baseline snapshot taken before each run.
 | Mock Bank: 4 extra error codes, replay `balance_after` = current balance, Credit can be `CURRENCY_MISMATCH`, runtime `slow_ms` check | `ADR-016` |
 | Inline saga budget is a **hard bound**: each call's deadline is `min(per-call timeout, budget left)`, no attempt with < 100 ms left, retry sleeps capped at the deadline | `ADR-010` |
 | Ledger maps its own trigger/CHECK rejections (`P0001`, `23514`) to `FAILED_PRECONDITION` / `LEDGER_INVARIANT_VIOLATION` (was `INTERNAL`) | `ADR-017` |
+| **`@fastify/jwt` 10.2.2**, not v9 (v9's `fast-jwt` has critical advisories); Gateway details | `ADR-019` |
 | Orchestrator: CAS also matches `state`; unrecognised bank errors are `BANK_INVARIANT_VIOLATION`; `INVALID_REQUEST`/`TRANSFER_NOT_FOUND` codes; extra startup checks | `ADR-018` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
@@ -172,6 +173,12 @@ mostly *verifies* them. M6 calls `advance` with `mode: 'recovery'` and uses
 `claimDue`/`acquireLease` from `repo/transfersRepo.ts`. `tests/tsconfig.json` references
 `services/orchestrator`, so integration tests may import its `src/` for repo-level SQL
 tests.
+
+**Shape notes from M4:** HTTP tests go through `tests/helpers/gatewayClient.ts`
+(`GatewayClient.for(DEV_CLIENTS.a)`; the dev credentials live in `docker-compose.yml`).
+`tests/helpers/bankAdmin.ts` creates accounts and sets chaos. `tests/helpers/stack.ts` can
+stop and start Compose services. The Gateway is built by `buildApp(deps)` with injected
+ports, so unit tests use `app.inject()` with no sockets.
 
 ## Doc map
 
