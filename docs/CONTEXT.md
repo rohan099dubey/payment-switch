@@ -169,7 +169,7 @@ Two, both the owner's to decide (not design questions):
   mutation artifacts (ADR-021). Until then, use `npm run invariants -- --since <ISO>` on
   this stack. A clean-room project in M9 showed the unscoped check passing on fresh
   databases. **The reset is prepared:** a verified `pg_dumpall` backup of all three
-  Postgres containers is in `D:\WORK\DEV\PROJECTS\PaymentSwitch_DEL_backups6-10-07-pre-reset\`
+  Postgres containers is in `D:\WORK\DEV\PROJECTS\PaymentSwitch_DEL_backups\2026-10-07-pre-reset\`
   (restore steps in its `RESTORE.md`). Running `stack:down` (it deletes the volumes) is
   blocked for Claude by the auto-mode classifier, so the owner runs it.
 - **A GitHub remote**, so CI can run and the last open "tests pass in CI" box can be
