@@ -1,6 +1,7 @@
 %% System architecture: 4 services, 4 data stores.
 %% Source: ARCHITECTURE.md section 4, plus phase 2 item 1 (section 19, ADR-025): the
-%% transactional outbox and Kafka; item 2 (ADR-026): the notification service.
+%% transactional outbox and Kafka; item 2 (ADR-026): the notification service;
+%% item 3 (ADR-027): reconciliation.
 flowchart TB
     client([Client])
 
@@ -23,6 +24,8 @@ flowchart TB
     kafka[("Kafka 3.9 (KRaft)<br/>transfer-events · transfer-events.dlq<br/><i>events only, never on the payment path</i>")]
     notif["<b>Notification</b><br/>HTTP 9103<br/>dedupe by event id · simulated webhook<br/>5 attempts, then DLQ"]
     pgn[("postgres-notification<br/>notification_db<br/>processed_events · webhook_attempts")]
+    recon["<b>Reconciliation</b><br/>gRPC 50053 · HTTP 9104<br/>every 5 min: statements vs journals<br/>GetReport · RunReconciliation"]
+    pgr[("postgres-reconciliation<br/>reconciliation_db<br/>runs · breaks")]
     pgl[("postgres-ledger<br/>ledger_db<br/>accounts · journals · entries")]
     pgb[("postgres-banks<br/>bank_a · bank_b<br/>accounts · operations")]
 
@@ -39,11 +42,15 @@ flowchart TB
     kafka -.->|"consumer group notification"| notif
     notif -.->|"dead letters"| kafka
     notif --- pgn
+    recon -.->|"GetStatement"| bka
+    recon -.->|"GetStatement"| bkb
+    recon -.->|"ListJournalsByTime"| ldg
+    recon --- pgr
     ldg --- pgl
     bka --- pgb
     bkb --- pgb
 
     classDef svc fill:#1e3a5f,stroke:#4a90d9,stroke-width:2px,color:#fff
     classDef store fill:#2d2d2d,stroke:#888,stroke-width:1px,color:#eee
-    class gw,orch,ldg,bka,bkb,notif svc
-    class redis,pgo,pgl,pgb,kafka,pgn store
+    class gw,orch,ldg,bka,bkb,notif,recon svc
+    class redis,pgo,pgl,pgb,kafka,pgn,pgr store

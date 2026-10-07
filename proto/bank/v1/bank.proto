@@ -11,6 +11,8 @@ service BankService {
   rpc ReverseDebit(ReverseDebitRequest) returns (MoneyOperationResponse);
   rpc Resolve(ResolveRequest) returns (ResolveResponse);
   rpc GetOperation(GetOperationRequest) returns (GetOperationResponse);
+  // Phase 2, item 3 (ADR-027): the APPLIED operations created in [from, to), paged.
+  rpc GetStatement(GetStatementRequest) returns (GetStatementResponse);
 
   // Admin and test support. Exempt from chaos injection.
   rpc CreateAccount(CreateAccountRequest) returns (Account);
@@ -100,4 +102,25 @@ message ChaosConfig {
   double lost_response_rate = 6;
   uint32 slow_ms = 7;
   uint32 seed = 8;
+}
+
+// Phase 2, item 3 (ADR-027).
+message GetStatementRequest {
+  google.protobuf.Timestamp from = 1; // inclusive
+  google.protobuf.Timestamp to = 2; // exclusive
+  int32 page_size = 3; // 1..1000; 0 means 1000
+  string page_token = 4; // empty for the first page
+}
+
+message StatementLine {
+  string reference_id = 1;
+  OperationType operation = 2;
+  string account_id = 3;
+  int64 amount = 4; // paise
+  google.protobuf.Timestamp applied_at = 5;
+}
+
+message GetStatementResponse {
+  repeated StatementLine lines = 1;
+  string next_page_token = 2; // empty on the last page
 }

@@ -11,7 +11,9 @@ import {
   awaitNotified,
   awaitOutboxPublished,
   checkI9,
+  checkI10,
   loadNotificationFacts,
+  loadOpenBreakRefs,
   readQuery,
   checkI8,
   loadOutboxFacts,
@@ -33,10 +35,14 @@ import {
   type TestAccount,
 } from './invariants';
 import { LedgerReader } from './ledgerClient';
+import { ReconciliationClient } from './reconciliation';
 import { waitFor } from './stack';
 
 export const ORCH_DB = process.env.ORCHESTRATOR_DATABASE_URL ?? 'postgres://orch:orch@localhost:5433/orchestrator_db';
 export const LEDGER_DB = process.env.LEDGER_DATABASE_URL ?? 'postgres://ledger:ledger@localhost:5434/ledger_db';
+export const RECON_DB =
+  process.env.RECONCILIATION_DATABASE_URL ??
+  'postgres://reconciliation:reconciliation@localhost:5437/reconciliation_db';
 export const NOTIFY_DB =
   process.env.NOTIFICATION_DATABASE_URL ?? 'postgres://notification:notification@localhost:5436/notification_db';
 
@@ -47,6 +53,8 @@ export interface ChaosStack extends InvariantDeps {
   ledgerDb: Pool;
   /** `notification_db` (phase 2, ADR-026), for I9. */
   notifyDb: Pool;
+  /** `reconciliation_db` (phase 2, ADR-027), for I10. */
+  reconDb: Pool;
   /** One API client per dev credential: each has its own rate-limit bucket. */
   clients: GatewayClient[];
   close: () => Promise<void>;
@@ -58,12 +66,14 @@ export function openStack(): ChaosStack {
   const orchDb = new Pool({ connectionString: ORCH_DB, max: 4 });
   const ledgerDb = new Pool({ connectionString: LEDGER_DB, max: 2 });
   const notifyDb = new Pool({ connectionString: NOTIFY_DB, max: 2 });
+  const reconDb = new Pool({ connectionString: RECON_DB, max: 1 });
   return {
     banks,
     ledger,
     orchDb,
     ledgerDb,
     notifyDb,
+    reconDb,
     concurrency: 32,
     clients: [DEV_CLIENTS.demo, DEV_CLIENTS.a, DEV_CLIENTS.b, DEV_CLIENTS.rateLimit].map((c) => GatewayClient.for(c)),
     close: async () => {
@@ -72,6 +82,7 @@ export function openStack(): ChaosStack {
       await orchDb.end();
       await ledgerDb.end();
       await notifyDb.end();
+      await reconDb.end();
     },
   };
 }
@@ -210,6 +221,14 @@ export async function evaluate(
   // I9 (ADR-026): the notification service must catch up on every published event.
   await awaitNotified(stack.orchDb, stack.notifyDb, ids, 180_000);
   const notified = checkI9(await loadNotificationFacts(stack.orchDb, stack.notifyDb, ids));
+  // I10 (ADR-027): reconcile the run's whole window now, then no open break may name a transfer.
+  const recon = new ReconciliationClient();
+  try {
+    await recon.run(new Date(baseline.takenAt.getTime() - 1000), new Date(Date.now() + 1000));
+  } finally {
+    recon.close();
+  }
+  const reconciled = checkI10(transfers, await loadOpenBreakRefs(stack.reconDb));
   const results = [
     await checkI1(stack),
     await checkI2(stack, baseline),
@@ -220,6 +239,7 @@ export async function evaluate(
     ...(duplicates === undefined ? [] : [checkI7(duplicates, transfers)]),
     outbox,
     notified,
+    reconciled,
   ];
   return { results, transfers };
 }

@@ -1,5 +1,13 @@
 import { status as Status } from '@grpc/grpc-js';
-import { makeGrpcError, sleep, type GrpcError, type Instrument } from '@switch/common';
+import {
+  decodePageToken,
+  encodePageToken,
+  makeGrpcError,
+  pageSize,
+  sleep,
+  type GrpcError,
+  type Instrument,
+} from '@switch/common';
 import {
   OperationStatus,
   OperationType,
@@ -21,6 +29,7 @@ import { createAccount, getAccount, type Account, type AccountStatus } from '../
 import {
   applyMoneyOperation,
   getOperation,
+  getStatement,
   resolveOperation,
   reverseDebit,
   type MoneyOutcome,
@@ -183,6 +192,36 @@ export function createBankHandlers(deps: HandlerDeps): BankServiceServer {
       }),
     ),
 
+    // Phase 2, item 3 (ADR-027): a statement read, under the same chaos rules as GetOperation.
+    getStatement: instrument('GetStatement', (request) =>
+      withChaos('lookup', async () => {
+        const { from, to } = request;
+        if (from === undefined || to === undefined || !(from < to))
+          throw invalid('from and to are required, from < to');
+        const limit = pageSize(request.pageSize);
+        if (limit === null) throw invalid('page_size must be 0..1000');
+        let after: [string, string, string] | null = null;
+        if (request.pageToken !== '') {
+          const key = decodePageToken(request.pageToken, 3);
+          if (key === null || key[0] === undefined || key[1] === undefined || key[2] === undefined) {
+            throw invalid('malformed page_token');
+          }
+          after = [key[0], key[1], key[2]];
+        }
+        const page = await getStatement(pool, from, to, limit, after);
+        return {
+          lines: page.lines.map((line) => ({
+            referenceId: line.referenceId,
+            operation: toOperationType(line.operation),
+            accountId: line.accountId,
+            amount: line.amount.toString(),
+            appliedAt: line.appliedAt,
+          })),
+          nextPageToken: page.nextKey === null ? '' : encodePageToken(page.nextKey),
+        };
+      }),
+    ),
+
     // Admin and test support: exempt from chaos.
     createAccount: instrument('CreateAccount', async (request) => {
       const openingBalance = parseNonNegativeAmount(request.openingBalance);
@@ -246,6 +285,17 @@ function parseNonNegativeAmount(value: string): bigint | null {
   if (!INTEGER.test(value)) return null;
   const amount = BigInt(value);
   return amount < 0n || amount > INT64_MAX ? null : amount;
+}
+
+function toOperationType(kind: OperationKind): OperationType {
+  switch (kind) {
+    case 'DEBIT':
+      return OperationType.OPERATION_TYPE_DEBIT;
+    case 'CREDIT':
+      return OperationType.OPERATION_TYPE_CREDIT;
+    case 'REVERSE_DEBIT':
+      return OperationType.OPERATION_TYPE_REVERSE_DEBIT;
+  }
 }
 
 function toOperationKind(operation: OperationType): OperationKind | null {

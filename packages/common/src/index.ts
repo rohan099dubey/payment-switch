@@ -4,6 +4,7 @@ export * from './hash';
 export * from './httpServer';
 export * from './logger';
 export * from './migrate';
+export * from './paging';
 export * from './time';
 export * from './grpc/call';
 export * from './grpc/client';

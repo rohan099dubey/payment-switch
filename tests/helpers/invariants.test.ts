@@ -11,6 +11,7 @@ import {
   checkI7,
   checkI8,
   checkI9,
+  checkI10,
   checkScoped,
   readQuery,
   type Evidence,
@@ -259,5 +260,16 @@ describe('checkI9 (notifications, ADR-026)', () => {
     expect(checkI9([fact({ outcome: 'DEAD_LETTERED' })]).ok).toBe(false);
     expect(checkI9([fact({ payeeAccountId: 'whfail-x' })]).ok).toBe(false);
     expect(checkI9([fact({ attempts: 6 })]).ok).toBe(false);
+  });
+});
+
+describe('checkI10 (reconciliation, ADR-027)', () => {
+  it('fails exactly the transfers that an open break names', () => {
+    const transfers = [transfer('SUCCESS', { id: 'a' }), transfer('REVERSED', { id: 'b' })];
+    expect(checkI10(transfers, new Set()).ok).toBe(true);
+    expect(checkI10(transfers, new Set(['not-a-transfer'])).ok).toBe(true);
+    const r = checkI10(transfers, new Set(['b']));
+    expect(r.ok).toBe(false);
+    expect(r.problems).toEqual(['b (REVERSED): open reconciliation break']);
   });
 });

@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+// Phase 2, item 3 (ARCHITECTURE.md section 19, ADR-027): compares each bank's statement
+// with the ledger's journals and records the breaks.
+package switchpay.reconciliation.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service ReconciliationService {
+  rpc GetReport(GetReportRequest) returns (GetReportResponse);
+  // Runs reconciliation now over an explicit window; the scheduled job uses the same code.
+  rpc RunReconciliation(RunReconciliationRequest) returns (ReconciliationRun);
+}
+
+enum BreakType {
+  BREAK_TYPE_UNSPECIFIED = 0;
+  BREAK_TYPE_MISSING_IN_LEDGER = 1; // an applied bank operation with no journal
+  BREAK_TYPE_MISSING_AT_BANK = 2; // a journal whose bank operation is not applied
+  BREAK_TYPE_AMOUNT_MISMATCH = 3; // both exist, the amounts differ
+}
+
+enum BreakStatus {
+  BREAK_STATUS_UNSPECIFIED = 0;
+  BREAK_STATUS_OPEN = 1;
+  BREAK_STATUS_RESOLVED = 2;
+}
+
+message Break {
+  string bank_id = 1;
+  string reference_id = 2;
+  string operation = 3; // DEBIT, CREDIT or REVERSE_DEBIT
+  BreakType type = 4;
+  int64 bank_amount = 5; // paise; 0 when the bank has no applied operation
+  int64 ledger_amount = 6; // paise; 0 when the ledger has no journal
+  BreakStatus status = 7;
+  google.protobuf.Timestamp first_seen_at = 8;
+  google.protobuf.Timestamp last_seen_at = 9;
+  google.protobuf.Timestamp resolved_at = 10; // unset while open
+}
+
+message ReconciliationRun {
+  string run_id = 1;
+  google.protobuf.Timestamp from = 2;
+  google.protobuf.Timestamp to = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp finished_at = 5;
+  int32 statement_lines = 6;
+  int32 journals = 7;
+  int32 breaks_opened = 8;
+  int32 breaks_resolved = 9;
+  int32 open_breaks = 10; // open breaks in the whole table after this run
+}
+
+message GetReportRequest {
+  BreakStatus status = 1; // UNSPECIFIED means every status
+  repeated string reference_ids = 2; // empty means every reference
+  int32 limit = 3; // 0 means 1000
+}
+
+message GetReportResponse {
+  repeated Break breaks = 1;
+  ReconciliationRun latest_run = 2; // unset before the first run
+  int32 open_breaks = 3;
+}
+
+message RunReconciliationRequest {
+  google.protobuf.Timestamp from = 1; // inclusive
+  google.protobuf.Timestamp to = 2; // exclusive; must be after from
+}

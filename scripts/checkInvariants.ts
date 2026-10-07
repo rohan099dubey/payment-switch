@@ -3,6 +3,7 @@
  * live stack, for every transfer the Orchestrator knows, or only those created since
  * `--since <ISO time>`. I8 expects a quiet stack: every outbox event published. I9 (ADR-026)
  * expects the notification service to have recorded an outcome for each published event.
+ * I10 (ADR-027) checks the reconciliation breaks already recorded for those transfers.
  *
  * There is no baseline here, so I2–I4 are evaluated per transfer: the bank operations and
  * journals carrying the in-scope transfer ids must add up (`checkScoped`). That is exact
@@ -19,7 +20,9 @@ import {
   checkI6,
   checkI8,
   checkI9,
+  checkI10,
   loadNotificationFacts,
+  loadOpenBreakRefs,
   loadOutboxFacts,
   outboxCutoff,
   checkScoped,
@@ -32,6 +35,9 @@ import { LedgerReader } from '../tests/helpers/ledgerClient';
 
 const ORCH_DB = process.env.ORCHESTRATOR_DATABASE_URL ?? 'postgres://orch:orch@localhost:5433/orchestrator_db';
 const LEDGER_DB = process.env.LEDGER_DATABASE_URL ?? 'postgres://ledger:ledger@localhost:5434/ledger_db';
+const RECON_DB =
+  process.env.RECONCILIATION_DATABASE_URL ??
+  'postgres://reconciliation:reconciliation@localhost:5437/reconciliation_db';
 const NOTIFY_DB =
   process.env.NOTIFICATION_DATABASE_URL ?? 'postgres://notification:notification@localhost:5436/notification_db';
 const BANK_DBS = {
@@ -107,7 +113,16 @@ async function main(): Promise<number> {
     } finally {
       await notifyDb.end();
     }
-    const results = [await checkI1(deps), i2, i3, i4, checkI5(evidence), checkI6(transfers), i8, i9].filter(
+    // I10 (ADR-027): no OPEN reconciliation break names an in-scope transfer. Read-only: it
+    // checks the breaks the scheduled (or an on-demand) run already recorded.
+    const reconDb = new Pool({ connectionString: RECON_DB, max: 1 });
+    let i10;
+    try {
+      i10 = checkI10(transfers, await loadOpenBreakRefs(reconDb));
+    } finally {
+      await reconDb.end();
+    }
+    const results = [await checkI1(deps), i2, i3, i4, checkI5(evidence), checkI6(transfers), i8, i9, i10].filter(
       (r) => r !== undefined,
     );
     process.stdout.write(`${formatResults(results)}\n`);

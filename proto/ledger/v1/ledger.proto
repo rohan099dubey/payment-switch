@@ -11,6 +11,8 @@ service LedgerService {
   rpc ListJournals(ListJournalsRequest) returns (ListJournalsResponse);
   rpc GetBalance(GetBalanceRequest) returns (AccountBalance);
   rpc GetTrialBalance(google.protobuf.Empty) returns (TrialBalanceResponse);
+  // Phase 2, item 3 (ADR-027): journals created in [from, to), paged. Read-only.
+  rpc ListJournalsByTime(ListJournalsByTimeRequest) returns (ListJournalsByTimeResponse);
 }
 
 enum EntryDirection {
@@ -80,4 +82,17 @@ message TrialBalanceResponse {
   int64 total_debits = 2;
   int64 total_credits = 3;
   bool balanced = 4;
+}
+
+// Phase 2, item 3 (ADR-027).
+message ListJournalsByTimeRequest {
+  google.protobuf.Timestamp from = 1; // inclusive
+  google.protobuf.Timestamp to = 2; // exclusive
+  int32 page_size = 3; // 1..1000; 0 means 1000
+  string page_token = 4; // empty for the first page
+}
+
+message ListJournalsByTimeResponse {
+  repeated Journal journals = 1;
+  string next_page_token = 2; // empty on the last page
 }

@@ -19,12 +19,15 @@
  * I9 (phase 2, ADR-026) follows the event one hop further: every published outbox event
  * has exactly one outcome in the notification service's dedupe table, `DELIVERED`, or
  * `DEAD_LETTERED` for a payee the simulated merchant always fails (`whfail-`).
+ *
+ * I10 (phase 2, ADR-027) looks from outside: after a reconciliation run covering the
+ * transfers, no OPEN break (bank statement against ledger journals) names one of them.
  */
 import type { Pool, QueryResult, QueryResultRow } from 'pg';
 import type { BankAdmin, BankId } from './bankAdmin';
 import type { JournalView, LedgerReader } from './ledgerClient';
 
-export type InvariantId = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'I6' | 'I7' | 'I8' | 'I9';
+export type InvariantId = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'I6' | 'I7' | 'I8' | 'I9' | 'I10';
 
 export interface InvariantResult {
   id: InvariantId;
@@ -535,6 +538,23 @@ export async function awaitNotified(
       throw new Error(`${missing.length} published events have no outcome after ${timeoutMs} ms`);
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
+}
+
+/** I10: `openBreakRefs` are the reference ids of OPEN reconciliation breaks. */
+export function checkI10(transfers: RunTransfer[], openBreakRefs: ReadonlySet<string>): InvariantResult {
+  const problems = transfers
+    .filter((t) => openBreakRefs.has(t.id))
+    .map((t) => `${t.id} (${t.state}): open reconciliation break`);
+  return result('I10', `${transfers.length} transfers, ${problems.length} with an open reconciliation break`, problems);
+}
+
+/** Reference ids of every OPEN break, read from `reconciliation_db`. */
+export async function loadOpenBreakRefs(reconDb: Pool): Promise<Set<string>> {
+  const r = await readQuery<{ reference_id: string }>(
+    reconDb,
+    "SELECT DISTINCT reference_id FROM reconciliation_breaks WHERE status = 'OPEN'",
+  );
+  return new Set(r.rows.map((row) => row.reference_id));
 }
 
 export interface DuplicateSample {

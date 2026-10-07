@@ -214,3 +214,45 @@ function toStored(row: JournalRow, lines: JournalLine[]): StoredJournal {
     lines,
   };
 }
+
+export interface JournalPage {
+  journals: StoredJournal[];
+  /** Sort key of the last journal, `[created_at as Postgres text, id]`; null on the last page. */
+  nextKey: [string, string] | null;
+}
+
+/**
+ * Journals created in `[from, to)`, in `(created_at, id)` order, at most `limit`, after the
+ * key `after` (ADR-027). The key's timestamp is Postgres text, so microseconds survive.
+ */
+export async function listJournalsByTime(
+  pool: Pool,
+  from: Date,
+  to: Date,
+  limit: number,
+  after: readonly [string, string] | null,
+): Promise<JournalPage> {
+  const client = await pool.connect();
+  try {
+    const result = await client.query<JournalRow & { created_at_text: string }>(
+      `SELECT ${JOURNAL_COLUMNS}, created_at::text AS created_at_text
+         FROM journals
+        WHERE created_at >= $1 AND created_at < $2
+          AND ($3::timestamptz IS NULL OR (created_at, id) > ($3::timestamptz, $4::uuid))
+        ORDER BY created_at, id
+        LIMIT $5`,
+      [from, to, after?.[0] ?? null, after?.[1] ?? null, limit],
+    );
+    const lines = await loadLines(
+      client,
+      result.rows.map((row) => row.id),
+    );
+    const last = result.rows.at(-1);
+    return {
+      journals: result.rows.map((row) => toStored(row, lines.get(row.id) ?? [])),
+      nextKey: last !== undefined && result.rows.length === limit ? [last.created_at_text, last.id] : null,
+    };
+  } finally {
+    client.release();
+  }
+}

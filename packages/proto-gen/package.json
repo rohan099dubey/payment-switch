@@ -6,7 +6,8 @@
   "exports": {
     "./bank/v1": "./dist/bank/v1/bank.js",
     "./ledger/v1": "./dist/ledger/v1/ledger.js",
-    "./orchestrator/v1": "./dist/orchestrator/v1/orchestrator.js"
+    "./orchestrator/v1": "./dist/orchestrator/v1/orchestrator.js",
+    "./reconciliation/v1": "./dist/reconciliation/v1/reconciliation.js"
   },
   "typesVersions": {
     "*": {
@@ -18,6 +19,9 @@
       ],
       "orchestrator/v1": [
         "dist/orchestrator/v1/orchestrator.d.ts"
+      ],
+      "reconciliation/v1": [
+        "dist/reconciliation/v1/reconciliation.d.ts"
       ]
     }
   },

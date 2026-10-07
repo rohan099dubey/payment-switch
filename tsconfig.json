@@ -14,6 +14,8 @@
     { "path": "services/gateway/test" },
     { "path": "services/notification" },
     { "path": "services/notification/test" },
+    { "path": "services/reconciliation" },
+    { "path": "services/reconciliation/test" },
     { "path": "tests" },
     { "path": "scripts" }
   ]
