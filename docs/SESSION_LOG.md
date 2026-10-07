@@ -1358,3 +1358,47 @@ those runs, but the difference is not tracing's cost.
 - Jaeger's batch export lags a few seconds: a trace query right after a request can be empty.
 - Without `requireParentSpan`, the 1 s pollers fill Jaeger with root `pg` traces.
 - The dev stack still holds the 2 red-test transfers (I4/I5/I10 unscoped); use `--since`.
+
+## 2026-10-07 — Session 4 (partial; usage limit) — P2-3 merged; tracing A/B redo interrupted
+
+**Done**
+- P2-3 `DONE`: nightly run 37624914860 green (seed 1: 9,467 / 519 / 14; seed 2: 9,402 / 526 / 72;
+  unscoped 20,239 transfers, I1–I10). Ticked in `5a8fda3` on `claude/p2-3-reconciliation`, `main`
+  fast-forwarded to `5a8fda3`, build/lint/typecheck/test (670/670) green in the main checkout, `main`
+  pushed. PR #3 shows merged.
+- `claude/p2-4-observability` **rebased locally** onto `main` (now `0d30bb5` plus this log commit).
+  Only conflict was `docs/PROGRESS.md` status rows. **Not pushed yet**: the remote still has the
+  pre-rebase `ae36c1d`, so the next push needs `--force-with-lease`.
+
+**Tracing A/B redo** (script kept outside the repo: per run, force-recreate the 7 app services from
+the same images, `OTEL_SDK_DISABLED=true` override for "off", `VACUUM ANALYZE` all money DBs, 15 s
+settle, 30 s warm-up at 75/s, 20 s pause, 2 min measured at 75/s with docker stats + pg_stat_activity
+sampling, then `invariants --since <warm-up start>`). Order off/on/off/on.
+```text
+run 1 OFF: warm-up p50 103 ms p95 1.79 s (55 dropped). Measured: 74.94 it/s, 0 dropped,
+           p50 90.2 ms, p95 161.1 ms, p99 328.4 ms, 0/9,004 errors. Invariants green.
+           Orchestrator ~67-82 % CPU; postgres-orchestrator ~45-60 % (one 153 % sample = autovacuum ANALYZE transfers)
+run 2 ON : warm-up p50 2.82 s p95 4.14 s (176 dropped). Measured: 42.77 it/s, 3,762 dropped,
+           p50 5.13 s, p95 29 s, 681/5,243 = 13 % HTTP 504 (Gateway's Orchestrator deadline).
+           Invariants green anyway (7,313 transfers, I1-I10; the 504s finished via recovery).
+run 3 OFF: void: Docker Desktop's engine disappeared mid warm-up (npipe gone). Run 4 not started.
+```
+**Diagnosis of run 2 (Prometheus):** not GC (gc rate < 0.15 s/s), not Postgres. The Orchestrator
+was CPU-bound: process CPU ~1.0-1.35 s/s with tracing on vs ~0.7 off; event-loop lag p99 1.34 s at
+13:47:00 and a missed scrape at 13:47:15. With tracing on, 75/s sits at the Orchestrator's
+single-thread knee, so the backlog left by the cold warm-up (400 VUs queued) never drains; from
+~13:47:30 throughput returned to normal. This also explains session 3's confounded pair: the
+"off" run there started right after a recreate with no warm-up (cold JIT), so it hit the same
+backlog collapse. **Conclusion so far: cold start after recreate dominates; tracing roughly
+doubles Orchestrator CPU per transfer.** No benchmarks.md row written yet.
+
+**Next actions**
+1. Docker Desktop must be running again (check `docker ps`; all 17 containers healthy).
+2. Redo the A/B at a rate **below the knee for both** (e.g. 50/s) with a longer warm-up (60-90 s),
+   off/on/off/on, and report **CPU-ms per transfer per service** (from
+   `rate(process_cpu_seconds_total[1m]) / rate(transfers_total[1m])`) plus k6 latency. Record a
+   benchmarks.md row (and an "Observations" note on the 75/s knee with tracing on) only if the
+   two pairs agree.
+3. Then: run lint/typecheck/test on the P2-4 branch, `git push --force-with-lease` it, open the PR,
+   `gh workflow run ci.yml --ref claude/p2-4-observability`, wait for CI, tick, merge ff-only, push main.
+4. P2-5 ledger balance snapshots; P2-6 k8s (optional).
