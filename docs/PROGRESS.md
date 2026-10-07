@@ -294,18 +294,30 @@ Details: `ADR-023`.
 - [x] Every milestone has its five "What I built and why" README lines (M0–M9, counted by script)
 - [x] (audit finding) The `SELECT 1` readiness pings moved from `main.ts` into each service's `repo/` (`ping()`); no `.query(` remains outside `repo/`, and every `/readyz` returns 200 on the rebuilt stack
 
+## After M9 — first CI runs (2026-10-07)
+
+The owner reset the development stack (after a verified backup) and created the private
+remote `rohan099dubey/payment-switch`. Details: `ADR-024`, the ADR-021 amendment, SESSION_LOG.
+
+- [x] First push (`17c5e9e`): `static` and `integration` green on GitHub Actions (run 37580346433)
+- [x] First `nightly` (run 37581136799) **failed on a real exactly-once bug**. Seed 2: transfer `b9bb6ea6` ended `FAILED / INSUFFICIENT_FUNDS` with its debit `APPLIED` (41,693 paise lost). A timed-out Debit (`late_apply`) applied after the retry had been refused. Root cause traced from the uploaded Compose logs
+- [x] Reproduced red before fixing: a late `Debit` after `FAILED`, and a late `Credit` after `REVERSED`, were both `APPLIED` (`failurePaths.test.ts`, "fenced against a late request")
+- [x] Fixed (`ADR-024`): every definite Debit/Credit refusal is fenced with `Resolve` before the failure branch. Both tests green; 7 new unit tests; a skip-the-fence mutant fails 14 tests
+- [x] Fix verified locally: unit 605/605, integration 181/181, 10,000 transfers with seeds 1 and 2 (9,466 / 518 / 16 and 9,399 / 521 / 80), I1–I7, 0 manual review; `invariants --since` the fix → 20,469 transfers hold
+- [x] Fix verified on GitHub (`c5a82c1`): push run 37584320506, `static` (unit 605/605) and `integration` (181/181, then the 1,000-transfer chaos run and crash recovery, 2/2). Nightly run 37584333954: seed 1 → 9,468 / 520 / 12, seed 2 → 9,407 / 525 / 68, then the unscoped `npm run invariants` over all 20,400 transfers holds
+
 ## Definition of done — phase 1
 
 From spec §20. Phase 2 (§19) starts only when every box here is ticked.
 
-Checked in M9 (2026-10-07). Six of eight are ticked; the other two cannot be observed
-from this machine and are marked **OPEN** with the reason.
+Checked in M9 and after the first CI runs (2026-10-07). Seven of eight are ticked; the
+last one is the owner's to confirm.
 
 - [x] `npm run stack:up` starts all services with no manual steps, and `npm run seed` creates demo accounts (clean-room project with empty volumes, ADR-023: 9/9 healthy, exit 0; seed "10 created", then "0 created, 10 already existed")
 - [x] Every proto file, schema, env var, endpoint and error code matches `ARCHITECTURE.md`, apart from the deviations recorded in ADRs 009–023. Checked by script, not by eye: the three protos are byte-identical to §9; every §10 SQL statement appears verbatim in the migrations, and the only extras are ADR-015's two `TRUNCATE` triggers; every §15 variable is in its service's `config.ts` with the spec default, and in `.env.example`; all six §5 endpoints are registered; every error code named in §5, §7, §8 and §14 appears in the source
-- [ ] **OPEN: needs a GitHub remote.** Unit and integration tests pass locally **and** in CI. Locally: unit 599/599; integration 179/179 on the development stack and again on a clean-room stack. CI: the workflow is actionlint-clean, but there is no remote, so it has never run
-- [x] The 10,000-transfer invariant test passes twice in a row with different seeds; I1–I7 hold; zero manual review (re-run in M9 on the final code: seed 1 → 9,466 / 519 / 15; seed 2 → 9,393 / 523 / 84; first observed in M7)
-- [x] The crash recovery test passes (three times in M9: 200/200 `SUCCESS`, all finished by recovery, I1–I6)
-- [x] k6 results recorded in `docs/benchmarks.md`, invariants held during the load run (three measured rows from M8, each with its invariant check; the load was not re-run in M9)
+- [x] Unit and integration tests pass locally **and** in CI. Locally on `c5a82c1`: unit 605/605, integration 181/181. GitHub Actions on `c5a82c1`: `static` (unit 605/605) and `integration` (181/181, plus the 1,000-transfer chaos run), run 37584320506
+- [x] The 10,000-transfer invariant test passes twice in a row with different seeds; I1–I7 hold; zero manual review. **On the fixed code** (`c5a82c1`, ADR-024): locally seed 1 → 9,466 / 518 / 16 and seed 2 → 9,399 / 521 / 80; GitHub nightly seed 1 → 9,468 / 520 / 12 and seed 2 → 9,407 / 525 / 68. (It had also passed in M7 and M9 on the code that still had the bug: passing twice did not prove the bug absent. The first nightly found it)
+- [x] The crash recovery test passes (three times in M9; twice locally and three times on GitHub on `c5a82c1`; every run's registered transfers all `SUCCESS`, I1–I6)
+- [x] k6 results recorded in `docs/benchmarks.md`, invariants held during the load run (three measured rows from M8, each with its invariant check; not re-run since. ADR-024 adds a call only on a bank refusal, and the load runs had none: every transfer ended `SUCCESS`)
 - [x] README complete, diagrams rendered, all eight ADRs written
 - [ ] **OPEN: the owner's to confirm.** Every milestone has its five "What I built and why" lines (M0–M9, counted), *and the owner can explain each one without notes*. Only the owner can check the second half

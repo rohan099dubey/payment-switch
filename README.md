@@ -163,8 +163,8 @@ npm run invariants -- --since 2026-10-07T00:00:00Z   # only transfers created si
 **The headline test** sends 10,000 transfers through the Gateway with seeded bank chaos
 (5% of calls refused as `UNAVAILABLE`, 2% applied late, 3% with the response lost, 5–50 ms latency), 5% duplicate
 requests and 5% transfers to payees that do not exist. It SIGKILLs the Orchestrator three
-times mid-run. It has passed twice in a row with different workload seeds, in two
-separate sessions:
+times mid-run. It has passed twice in a row with different workload seeds, locally and
+on GitHub Actions:
 
 | Run | Test seed | Requests | Final states | Manual review | Invariants |
 |---|---|---|---|---|---|
@@ -172,6 +172,13 @@ separate sessions:
 | M7, 2026-10-06 | 2 | 10,486 | 9,397 `SUCCESS`, 524 `REVERSED`, 79 `FAILED` | 0 | I1–I7 hold |
 | M9, 2026-10-07 | 1 | 10,486 | 9,466 `SUCCESS`, 519 `REVERSED`, 15 `FAILED` | 0 | I1–I7 hold |
 | M9, 2026-10-07 | 2 | 10,486 | 9,393 `SUCCESS`, 523 `REVERSED`, 84 `FAILED` | 0 | I1–I7 hold |
+| CI nightly, after ADR-024 | 1 | 10,486 | 9,468 `SUCCESS`, 520 `REVERSED`, 12 `FAILED` | 0 | I1–I7 hold |
+| CI nightly, after ADR-024 | 2 | 10,486 | 9,407 `SUCCESS`, 525 `REVERSED`, 68 `FAILED` | 0 | I1–I7 hold |
+
+The first nightly run on GitHub, before ADR-024, failed seed 2: a timed-out debit applied
+after the transfer had failed on a refused retry. I5 caught it, transfer by transfer. The
+rows above are from runs that passed; see
+[ADR-024](docs/decisions/ADR-024-fence-definite-failures.md) for the bug and the fix.
 
 The same seed can end with slightly different counts. The seed fixes the workload, but
 100 concurrent requests interleave differently each run, so a payer near zero may or may
