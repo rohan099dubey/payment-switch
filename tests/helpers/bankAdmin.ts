@@ -88,6 +88,20 @@ export class BankAdmin {
     }
   }
 
+  /** `Resolve`: writes a VOIDED tombstone unless the operation already applied. */
+  async resolve(bank: BankId, referenceId: string, operation: 'DEBIT' | 'CREDIT'): Promise<'APPLIED' | 'VOIDED'> {
+    const c = this.clients[bank];
+    const res = await callUnary(
+      c.resolve.bind(c),
+      {
+        referenceId,
+        operation: operation === 'DEBIT' ? OperationType.OPERATION_TYPE_DEBIT : OperationType.OPERATION_TYPE_CREDIT,
+      },
+      { timeoutMs: TIMEOUT_MS },
+    );
+    return res.status === OperationStatus.OPERATION_STATUS_APPLIED ? 'APPLIED' : 'VOIDED';
+  }
+
   /** Back to the defaults docker-compose.yml starts the banks with: no chaos. */
   async clearChaos(bank: BankId): Promise<void> {
     await this.setChaos(bank, {

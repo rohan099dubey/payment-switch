@@ -22,6 +22,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M9 | Polish | `DONE` | 17, 20 | 2026-10-07 | see `git log --grep "M9"` |
 | P2-1 | Transactional outbox & Kafka (phase 2, §19 item 1) | `DONE` | 6, 19 (+ ADR-025) | 2026-10-07 | see `git log --grep "P2-1"` |
 | P2-2 | Notification service (phase 2, §19 item 2) | `DONE` | 19 (+ ADR-025, ADR-026) | 2026-10-07 | see `git log --grep "P2-2"` |
+| P2-3 | Reconciliation service (phase 2, §19 item 3) | `IN_PROGRESS` | 7, 8, 9, 19 (+ ADR-027) | — | — |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -378,3 +379,35 @@ Acceptance
 - [x] The 10,000-transfer test passes twice with different seeds, with **I8 and I9** holding (seed 1: 9,467 / 519 / 14; seed 2: 9,403 / 523 / 74; I1–I9, 0 manual review; I9 10,000 of 10,000 delivered each run; crash recovery passes in both with I8 and I9. In seed 1 one verification read hit the Docker Desktop reset and `readQuery` retried it, as designed)
 - [x] `npm run invariants` (I1–I6, I8, I9) green after the runs (`--since 2026-10-07T11:53:36Z`: 20,484 transfers, all hold; I9 20,483 delivered, 1 dead-lettered, the integration test's `whfail-` payee)
 - [x] CI green on GitHub: PR rohan099dubey/payment-switch#2 (`static`, `integration`); `nightly` run 37620676547 (seeds 1 and 2: I9 10,000 of 10,000 delivered each; unscoped invariants on the fresh CI stack: 20,400 transfers, I1–I9 hold)
+
+## P2-3 — Reconciliation service (phase 2, §19 item 3)
+
+**Scope:** `services/reconciliation`; the bank RPC `GetStatement(from, to)`; a job every 5
+minutes comparing each bank's statement with the ledger's journals by reference id; breaks
+classified as missing in ledger, missing at bank or amount mismatch, stored in
+`reconciliation_breaks`; a `GetReport` RPC. Interpretations and additions: `ADR-027`.
+
+Contracts (all additive; `buf lint` clean, `buf breaking` against `main` clean)
+- [x] `bank.proto`: `GetStatement(from, to, page_size, page_token)` with `StatementLine`
+- [x] `ledger.proto`: **added** `ListJournalsByTime(from, to, page_size, page_token)`, read-only (needed for "missing at bank")
+- [x] `reconciliation.proto` (new): `GetReport`, **added** `RunReconciliation`, `Break`, `ReconciliationRun`
+
+Implementation
+- [x] Keyset paging in `@switch/common` (`encodePageToken` / `decodePageToken` / `pageSize`); the cursor keeps Postgres's own timestamp text, so microseconds survive
+- [x] Mock Bank: `getStatement` (APPLIED only) plus `0002_statement_idx.sql`; Ledger: `listJournalsByTime` plus `0004_journals_created_idx.sql`; both validate window, page size and token (`INVALID_REQUEST`)
+- [x] `domain/legs.ts`: journal kind to (bank, operation) leg; `classify`
+- [x] `domain/reconciler.ts`: window candidates, the missing side looked up by reference at any time, duplicate journals summed, open breaks re-checked, unknown bank counted as missing at bank
+- [x] `repo/reconRepo.ts`: set-based break upsert that counts opened and reopened breaks, resolve, runs, report; `pg_advisory_lock` serializes runs across instances
+- [x] `runner.ts`: runs (scheduled or on demand) recorded with their outcome or error; the scheduler continues from the last scheduled `to`, stays `RECON_SETTLE_MS` behind now, and never leaves gaps
+- [x] gRPC `GetReport`, `RunReconciliation`; metrics `reconciliation_runs_total`, `reconciliation_breaks_seen_total`, `reconciliation_open_breaks`
+- [x] Compose: `postgres-reconciliation` (5437) and `reconciliation` (50053/9104); `.env.example`; architecture diagram
+- [x] Invariant **I10** in the shared helpers: both chaos tests (an on-demand run over the run's window first) and `npm run invariants`
+
+Acceptance
+- [x] Unit: 9 reconciler tests (each class, window-edge straddle, duplicate journals, unknown bank, open → resolved → reopened); paging and I10 checks. A window-only mutant fails 5
+- [x] Integration (`tests/integration/reconciliation.test.ts`, 7): paging with no gaps or repeats and no VOIDED lines; `ListJournalsByTime` paging; invalid requests; SUCCESS / FAILED / REVERSED switch transfers have no break; each break class with both amounts; a break resolved by a later run; `RunReconciliation` validation
+- [x] On today's development data (185,876 statement lines, 185,664 journals, 57 s): 763 breaks, of which exactly 2 are switch transfers: the two red-test transfers (both `MISSING_IN_LEDGER`, 1,000 paise). The other 761 are direct bank or Ledger test traffic. The unscoped checker's I10 flags the same 2 transfers as I4/I5
+- [x] Full integration suite green: 212/212 in 13 files
+- [x] The 10,000-transfer test passes twice with different seeds, with **I8–I10** holding (seed 1: 9,469 / 519 / 12; seed 2: 9,400 / 524 / 76; I1–I10, 0 manual review; I10: 0 of 10,000 transfers with an open break; crash recovery passes with I8–I10)
+- [x] `npm run invariants` green after the runs (`--since 2026-10-07T12:45:02Z`: 20,487 transfers, I1–I6 and I8–I10 hold)
+- [ ] CI green on GitHub

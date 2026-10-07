@@ -58,6 +58,23 @@ services:
       timeout: 3s
       retries: 10
 
+  # Phase 2, item 3 (ADR-027): the reconciliation service's own database (ADR-007).
+  postgres-reconciliation:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: reconciliation
+      POSTGRES_PASSWORD: reconciliation
+      POSTGRES_DB: reconciliation_db
+    ports:
+      - '5437:5432'
+    volumes:
+      - reconciliation-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-h', '127.0.0.1', '-U', 'reconciliation', '-d', 'reconciliation_db']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   postgres-banks:
     image: postgres:16
     environment:
@@ -171,6 +188,42 @@ services:
       interval: 5s
       timeout: 3s
       retries: 24
+
+  # Phase 2, item 3 (ARCHITECTURE.md section 19, ADR-027): compares each bank's statement
+  # with the ledger's journals every RECON_INTERVAL_MS and records the breaks.
+  reconciliation:
+    build:
+      context: .
+      args:
+        SERVICE: reconciliation
+    environment:
+      LOG_LEVEL: info
+      GRPC_PORT: '50053'
+      HTTP_PORT: '9104'
+      DATABASE_URL: postgres://reconciliation:reconciliation@postgres-reconciliation:5432/reconciliation_db
+      BANK_ENDPOINTS: bank_a=bank-a:50061,bank_b=bank-b:50062
+      LEDGER_ADDR: ledger:50052
+      RECON_INTERVAL_MS: '300000'
+      RECON_SETTLE_MS: '120000'
+      RECON_INITIAL_FROM: ''
+      RECON_LOOKUP_CONCURRENCY: '16'
+    ports:
+      - '50053:50053'
+      - '9104:9104'
+    depends_on:
+      postgres-reconciliation:
+        condition: service_healthy
+      ledger:
+        condition: service_healthy
+      bank-a:
+        condition: service_healthy
+      bank-b:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:9104/readyz']
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # One codebase, two instances. Each owns one database on postgres-banks.
   bank-a:
@@ -315,3 +368,4 @@ volumes:
   banks-data:
   kafka-data:
   notification-data:
+  reconciliation-data:

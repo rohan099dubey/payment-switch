@@ -232,3 +232,59 @@ function applied(
 function rejected(code: RejectionCode): MoneyOutcome {
   return { status: 'rejected', code };
 }
+
+export interface StatementLine {
+  referenceId: string;
+  operation: OperationKind;
+  accountId: string;
+  amount: bigint;
+  appliedAt: Date;
+}
+
+export interface StatementPage {
+  lines: StatementLine[];
+  /** `[created_at as Postgres text, reference_id, operation]` of the last line; null on the last page. */
+  nextKey: [string, string, string] | null;
+}
+
+/**
+ * GetStatement (ADR-027): the APPLIED operations created in `[from, to)`, in
+ * `(created_at, reference_id, operation)` order, at most `limit`, after `after`. A VOIDED
+ * tombstone moved no money and is not a statement line.
+ */
+export async function getStatement(
+  pool: Pool,
+  from: Date,
+  to: Date,
+  limit: number,
+  after: readonly [string, string, string] | null,
+): Promise<StatementPage> {
+  const { rows } = await pool.query<{
+    reference_id: string;
+    operation: OperationKind;
+    account_id: string;
+    amount: string;
+    created_at: Date;
+    created_at_text: string;
+  }>(
+    `SELECT reference_id, operation, account_id, amount::text AS amount, created_at, created_at::text AS created_at_text
+       FROM operations
+      WHERE status = 'APPLIED' AND created_at >= $1 AND created_at < $2
+        AND ($3::timestamptz IS NULL OR (created_at, reference_id, operation) > ($3::timestamptz, $4, $5))
+      ORDER BY created_at, reference_id, operation
+      LIMIT $6`,
+    [from, to, after?.[0] ?? null, after?.[1] ?? null, after?.[2] ?? null, limit],
+  );
+  const last = rows.at(-1);
+  return {
+    lines: rows.map((row) => ({
+      referenceId: row.reference_id,
+      operation: row.operation,
+      accountId: row.account_id,
+      amount: BigInt(row.amount),
+      appliedAt: row.created_at,
+    })),
+    nextKey:
+      last !== undefined && rows.length === limit ? [last.created_at_text, last.reference_id, last.operation] : null,
+  };
+}

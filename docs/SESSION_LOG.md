@@ -1256,3 +1256,49 @@ unscoped checker: I9 over 51,909 published events (51,906 delivered, 3 dead-lett
   (§19 item 3). Design note: finding "missing at bank" needs the ledger's journals for a
   time window, which no ledger RPC offers yet. That will be an additive, read-only Ledger
   RPC, with an ADR.
+
+---
+
+## 2026-10-07 — Session 3 (continued) — P2-2 merged; P2-3 Reconciliation service
+
+**Status at end:** P2-2 `DONE` and on `main` (`c27e782`; PR rohan099dubey/payment-switch#2,
+nightly 37620676547 green with I9). P2-3: every box but CI ticked. Branch
+`claude/p2-3-reconciliation`.
+
+**Done**
+- Contracts, all additive (`buf breaking` against `main` clean): bank `GetStatement`, ledger
+  `ListJournalsByTime` (added, ADR-027), new `reconciliation.proto`. Keyset paging helpers in
+  `@switch/common`. Index migrations on both sides.
+- `services/reconciliation`: legs, the reconciler (window candidates, the missing side looked
+  up by reference, duplicates summed, open breaks re-checked), set-based break upsert, an
+  advisory-locked runner, a scheduler (5 min, 120 s settle), gRPC `GetReport` and
+  `RunReconciliation`, three metrics, its own Postgres. Invariant I10.
+
+**Results (measured)**
+```text
+first run over today's dev data: 185,876 statement lines vs 185,664 journals in 57 s -> 763 breaks;
+  exactly 2 are switch transfers (c9346799, 5c784905: the red-test transfers, MISSING_IN_LEDGER 1,000)
+  the other 761 are direct bank or Ledger test traffic (none is a UUID transfer id)
+unit 9 reconciler tests, plus paging and I10; a window-only mutant fails 5
+integration 212/212 (13 files); reconciliation.test 7/7
+TRANSFER_COUNT=10000 test:chaos seed 1: 9,469 / 519 / 12, I1-I10 (I10: 0 open breaks of 10,000)
+TRANSFER_COUNT=10000 test:chaos seed 2: 9,400 / 524 / 76, I1-I10
+npm run invariants -- --since 2026-10-07T12:45:02Z -> 20,487 transfers, I1-I6 and I8-I10 hold
+unscoped checker: I10 flags the same 2 transfers as I4/I5 (two independent views agree)
+```
+
+**Gotchas**
+- The test client's transport retry fired 18 and 40 times in the two chaos runs (POST with no
+  response in 20 s). Checked rather than assumed: the Gateway's own logs show a maximum of
+  6,989 ms over 23,086 transfer requests in that window, none over 10 s. So these were
+  connections lost in Docker Desktop's port forwarding, very likely while `docker compose
+  kill/start` restarted the Orchestrator. The retry recovers lost connections; it hides no
+  slowness. Retries reuse the same `Idempotency-Key` (I7 checks every replay).
+- Reconciliation reports traffic that bypassed the switch as true breaks (the bank and
+  Ledger tests call those services directly). That is correct, so I10 is scoped to switch
+  transfers.
+
+**Next action**
+- P2-3 PR, CI with `nightly`, merge; then P2-4 tracing and dashboards (§19 item 4):
+  OpenTelemetry 0.223 (sdk-node, OTLP proto, gRPC/HTTP/pg instrumentation) to Jaeger 2.11,
+  Prometheus 3.7, Grafana 12.2 with committed dashboard JSON.

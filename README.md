@@ -27,7 +27,10 @@ Kafka is never on the payment path: if it is down, payments go on and events wai
 9103, its own database) consumes those events, deduplicates them by event id, calls a
 simulated merchant webhook with exponential backoff, and dead-letters an event to
 `transfer-events.dlq` after 5 failed attempts
-([ADR-026](docs/decisions/ADR-026-notification-service.md)).
+([ADR-026](docs/decisions/ADR-026-notification-service.md)). A **reconciliation service**
+(gRPC 50053) compares each bank's statement with the ledger's journals every 5 minutes and
+records any break: missing in ledger, missing at bank, or amount mismatch
+([ADR-027](docs/decisions/ADR-027-reconciliation-service.md)).
 
 Each transfer is a persisted state machine driven by the Orchestrator. It has ten states,
 four of them terminal, and **a timeout never changes the state**:
@@ -164,11 +167,12 @@ Seven invariants are checked against a baseline snapshot taken before each run:
 | **I7** | Replays are idempotent: same transfer id, same final state |
 | **I8** | Every finished transfer has exactly one outbox event of the matching type, and none stays unpublished (phase 2, [ADR-025](docs/decisions/ADR-025-outbox-and-kafka.md)) |
 | **I9** | Every published event has exactly one notification outcome: delivered, or dead-lettered when the merchant always fails (phase 2, [ADR-026](docs/decisions/ADR-026-notification-service.md)) |
+| **I10** | Seen from outside: after a reconciliation run, no open break names a transfer the switch made (phase 2, [ADR-027](docs/decisions/ADR-027-reconciliation-service.md)) |
 
 ```bash
 npm run test:chaos                          # crash recovery + the 10,000-transfer invariant test
 TRANSFER_COUNT=1000 npm run test:chaos      # the CI size
-npm run invariants                          # I1-I6, I8 and I9 against the live stack, every transfer
+npm run invariants                          # I1-I6 and I8-I10 against the live stack, every transfer
 npm run invariants -- --since 2026-10-07T00:00:00Z   # only transfers created since then
 ```
 
@@ -300,6 +304,7 @@ Where the implementation fills a gap in the specification or deviates from it:
 | [024](docs/decisions/ADR-024-fence-definite-failures.md) | A definite bank refusal is fenced with `Resolve` before the failure branch (found by the first nightly CI run) |
 | [025](docs/decisions/ADR-025-outbox-and-kafka.md) | Transactional outbox and Kafka (phase 2): an event for every terminal state, money as a string, Kafka 3.9 for kafkajs, no Kafka on the payment path |
 | [026](docs/decisions/ADR-026-notification-service.md) | Notification service (phase 2): its own database, a dedupe table keyed by event id, a deterministic simulated webhook, 5 attempts then the dead-letter topic |
+| [027](docs/decisions/ADR-027-reconciliation-service.md) | Reconciliation (phase 2): legs matched by (bank, reference, operation), paged `GetStatement`, an added read-only ledger range query, a settle lag, breaks that open and resolve |
 
 ## 8. What I built and why
 
@@ -388,3 +393,10 @@ Five lines after each milestone, each one explainable out loud without notes.
 3. A failing merchant gets 5 attempts with exponential backoff (200, 400, 800, 1,600 ms, measured in the tests). After that the event goes to a dead-letter topic with the reason and attempt count, so nothing is silently lost.
 4. Failure is tested deterministically: payees named `whfail-` or `whflaky-` make the simulated merchant always fail or recover on attempt 3, with no test-only backdoor. A malformed message is dead-lettered at once instead of blocking its partition forever.
 5. A new invariant, I9, says every published event reaches exactly one outcome (delivered or dead-lettered). It held for all 10,000 transfers in each of two chaos runs, and a restarted service missed nothing.
+
+**P2-3 — Reconciliation service** (phase 2)
+1. An independent service compares what each bank says happened (its statement) with what the ledger recorded, leg by leg, matched by bank, reference id and operation, and records every disagreement as a break.
+2. A leg that straddles a time window is looked up by reference rather than by time, so a journal posted milliseconds after its bank debit is never a false break. A break that heals later (when recovery finishes a transfer) is marked resolved, not forgotten.
+3. Its first run over a full day of data (185,876 statement lines against 185,664 journals) found exactly the two transfers I had corrupted earlier with a red test, from outside the switch, matching what the switch's own invariants said.
+4. Statement and journal reads are paged with a keyset cursor that keeps Postgres's microsecond timestamps, so no row is skipped or repeated even when thousands share a millisecond.
+5. A new invariant, I10 (no open break names a switch transfer), held for 10,000 transfers in each of two chaos runs with Orchestrator kills.

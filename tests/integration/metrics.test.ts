@@ -55,6 +55,17 @@ const SERVICES: { service: string; url: string; metrics: Expected[] }[] = [
     ],
   },
   {
+    // Phase 2, item 3 (ADR-027).
+    service: 'reconciliation',
+    url: process.env.RECONCILIATION_HTTP_URL ?? 'http://localhost:9104',
+    metrics: [
+      ...GRPC,
+      { name: 'reconciliation_runs_total', type: 'counter', labels: ['result'] },
+      { name: 'reconciliation_breaks_seen_total', type: 'counter', labels: ['type'] },
+      { name: 'reconciliation_open_breaks', type: 'gauge', labels: [] },
+    ],
+  },
+  {
     service: 'ledger',
     url: process.env.LEDGER_HTTP_URL ?? 'http://localhost:9102',
     metrics: [...GRPC, { name: 'journals_posted_total', type: 'counter', labels: ['kind', 'replayed'] }],

@@ -1,5 +1,5 @@
 import { status as Status } from '@grpc/grpc-js';
-import { makeGrpcError, type Instrument } from '@switch/common';
+import { decodePageToken, encodePageToken, makeGrpcError, pageSize, type Instrument } from '@switch/common';
 import {
   EntryDirection,
   type AccountBalance as ProtoAccountBalance,
@@ -11,7 +11,13 @@ import { journalRequestHash } from '../domain/journalHash';
 import { validatePostJournal } from '../domain/validate';
 import type { LedgerMetrics } from '../metrics';
 import { getBalance, getTrialBalance, type AccountBalance } from '../repo/balanceRepo';
-import { getJournal, listJournalsByReference, postJournal, type StoredJournal } from '../repo/journalRepo';
+import {
+  getJournal,
+  listJournalsByReference,
+  listJournalsByTime,
+  postJournal,
+  type StoredJournal,
+} from '../repo/journalRepo';
 
 /** `x-error-code` values the Ledger sends (spec sections 7 and 14). */
 export const LedgerErrorCode = {
@@ -21,6 +27,8 @@ export const LedgerErrorCode = {
   JOURNAL_NOT_FOUND: 'JOURNAL_NOT_FOUND',
   /** ADR-017: the database's own triggers or CHECKs refused a journal the app accepted. */
   LEDGER_INVARIANT_VIOLATION: 'LEDGER_INVARIANT_VIOLATION',
+  /** ADR-027: a malformed ListJournalsByTime request (window, page size or token). */
+  INVALID_REQUEST: 'INVALID_REQUEST',
 } as const;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -100,6 +108,29 @@ export function createLedgerHandlers({ pool, metrics, instrument }: HandlerDeps)
         );
       }
       return toProtoBalance(balance);
+    }),
+
+    // Phase 2, item 3 (ADR-027): read-only, paged, for reconciliation.
+    listJournalsByTime: instrument('ListJournalsByTime', async (request) => {
+      const invalid = (reason: string): Error =>
+        makeGrpcError(Status.INVALID_ARGUMENT, LedgerErrorCode.INVALID_REQUEST, reason);
+      const { from, to } = request;
+      if (from === undefined || to === undefined || !(from < to)) throw invalid('from and to are required, from < to');
+      const limit = pageSize(request.pageSize);
+      if (limit === null) throw invalid('page_size must be 0..1000');
+      let after: [string, string] | null = null;
+      if (request.pageToken !== '') {
+        const key = decodePageToken(request.pageToken, 2);
+        if (key === null || key[0] === undefined || key[1] === undefined || !UUID.test(key[1])) {
+          throw invalid('malformed page_token');
+        }
+        after = [key[0], key[1]];
+      }
+      const page = await listJournalsByTime(pool, from, to, limit, after);
+      return {
+        journals: page.journals.map(toProtoJournal),
+        nextPageToken: page.nextKey === null ? '' : encodePageToken(page.nextKey),
+      };
     }),
 
     getTrialBalance: instrument('GetTrialBalance', async () => {
