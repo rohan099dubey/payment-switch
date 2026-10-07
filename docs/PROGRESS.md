@@ -22,7 +22,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M9 | Polish | `DONE` | 17, 20 | 2026-10-07 | see `git log --grep "M9"` |
 | P2-1 | Transactional outbox & Kafka (phase 2, §19 item 1) | `DONE` | 6, 19 (+ ADR-025) | 2026-10-07 | see `git log --grep "P2-1"` |
 | P2-2 | Notification service (phase 2, §19 item 2) | `DONE` | 19 (+ ADR-025, ADR-026) | 2026-10-07 | see `git log --grep "P2-2"` |
-| P2-3 | Reconciliation service (phase 2, §19 item 3) | `IN_PROGRESS` | 7, 8, 9, 19 (+ ADR-027) | — | — |
+| P2-3 | Reconciliation service (phase 2, §19 item 3) | `DONE` | 7, 8, 9, 19 (+ ADR-027) | 2026-10-07 | see `git log --grep "P2-3"` |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -410,4 +410,4 @@ Acceptance
 - [x] Full integration suite green: 212/212 in 13 files
 - [x] The 10,000-transfer test passes twice with different seeds, with **I8–I10** holding (seed 1: 9,469 / 519 / 12; seed 2: 9,400 / 524 / 76; I1–I10, 0 manual review; I10: 0 of 10,000 transfers with an open break; crash recovery passes with I8–I10)
 - [x] `npm run invariants` green after the runs (`--since 2026-10-07T12:45:02Z`: 20,487 transfers, I1–I6 and I8–I10 hold)
-- [ ] CI green on GitHub
+- [x] CI green on GitHub: PR rohan099dubey/payment-switch#3 (`static`, `integration` on `3f41d87`); `nightly` run 37624914860 (seed 1: 9,467 / 519 / 14; seed 2: 9,402 / 526 / 72; I10: 0 open breaks each; unscoped invariants on the fresh CI stack: 20,239 transfers, I1–I10 hold)
