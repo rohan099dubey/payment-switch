@@ -64,33 +64,37 @@ describe('the token bucket script in Redis (tokenBucket.lua)', () => {
 });
 
 describe('rate limiting through the Gateway', () => {
-  it('beyond the burst, requests get 429 RATE_LIMITED with Retry-After and X-RateLimit-Remaining: 0', async () => {
-    const client = GatewayClient.for(DEV_CLIENTS.rateLimit);
-    await client.accessToken();
-    const before = await metric('rate_limit_rejections_total');
-    const failOpenBefore = await metric('rate_limit_fail_open_total');
+  it(
+    'beyond the burst, requests get 429 RATE_LIMITED with Retry-After and X-RateLimit-Remaining: 0',
+    { timeout: 90_000 },
+    async () => {
+      const client = GatewayClient.for(DEV_CLIENTS.rateLimit);
+      await client.accessToken();
+      const before = await metric('rate_limit_rejections_total');
+      const failOpenBefore = await metric('rate_limit_fail_open_total');
 
-    const started = Date.now();
-    const results = await Promise.all(Array.from({ length: 450 }, () => client.getTransfer(randomUUID())));
-    const elapsedS = (Date.now() - started) / 1000;
+      const started = Date.now();
+      const results = await Promise.all(Array.from({ length: 450 }, () => client.getTransfer(randomUUID())));
+      const elapsedS = (Date.now() - started) / 1000;
 
-    const limited = results.filter((r) => r.status === 429);
-    const passed = results.filter((r) => r.status === 404);
-    expect(limited.length + passed.length).toBe(results.length);
-    expect(limited.length).toBeGreaterThan(0);
-    // burst 200 plus 100/s refill while the calls ran, plus a little slack.
-    expect(passed.length).toBeLessThanOrEqual(200 + Math.ceil(100 * elapsedS) + 5);
-    for (const r of limited) {
-      expect(r.body).toMatchObject({ error: { code: 'RATE_LIMITED' } });
-      expect(Number(r.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
-      expect(r.headers.get('x-ratelimit-remaining')).toBe('0');
-    }
-    for (const r of passed) expect(r.headers.get('x-ratelimit-remaining')).toMatch(/^\d+$/);
-    expect(await metric('rate_limit_rejections_total')).toBe(before + limited.length);
-    // Redis is healthy, so a burst must never be let through by the fail-open path
-    // (ADR-019 amendment: a too-short command timeout once did exactly that on CI).
-    expect(await metric('rate_limit_fail_open_total')).toBe(failOpenBefore);
-  });
+      const limited = results.filter((r) => r.status === 429);
+      const passed = results.filter((r) => r.status === 404);
+      expect(limited.length + passed.length).toBe(results.length);
+      expect(limited.length).toBeGreaterThan(0);
+      // burst 200 plus 100/s refill while the calls ran, plus a little slack.
+      expect(passed.length).toBeLessThanOrEqual(200 + Math.ceil(100 * elapsedS) + 5);
+      for (const r of limited) {
+        expect(r.body).toMatchObject({ error: { code: 'RATE_LIMITED' } });
+        expect(Number(r.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
+        expect(r.headers.get('x-ratelimit-remaining')).toBe('0');
+      }
+      for (const r of passed) expect(r.headers.get('x-ratelimit-remaining')).toMatch(/^\d+$/);
+      expect(await metric('rate_limit_rejections_total')).toBe(before + limited.length);
+      // Redis is healthy, so a burst must never be let through by the fail-open path
+      // (ADR-019 amendment: a too-short command timeout once did exactly that on CI).
+      expect(await metric('rate_limit_fail_open_total')).toBe(failOpenBefore);
+    },
+  );
 
   it('buckets are per client: another client is unaffected', async () => {
     const res = await GatewayClient.for(DEV_CLIENTS.demo).getTransfer(randomUUID());

@@ -130,3 +130,18 @@ mutation runs use their own databases, never the shared ones.
   "Connection terminated"), at most twice, logging each retry to stderr. A SQL error
   or a wrong result fails at once, and the data checked is the same, so no invariant is
   loosened. The next two full runs logged 0 retries.
+- **The test HTTP client retries a request with no HTTP response (P2-2).** The Gateway
+  burst test (450 concurrent requests) twice timed out at 30 s. The Gateway's own logs
+  showed why: in those runs only 445 and 448 requests ever arrived, while every passing
+  run shows all 450. It answered everything it received, quickly. Connections lost on the
+  way into Docker Desktop on Windows are the same family as the `ECONNRESET` above. Plain
+  `fetch` has no timeout, so the test hung. `tests/helpers/gatewayClient.ts` now gives
+  each request a 20 s timeout (above the Gateway's 10 s Orchestrator deadline) and retries
+  **only** when no HTTP response arrived, at most twice, logging each retry. That is the
+  client rule the README states: retry network errors with the same `Idempotency-Key`,
+  which is safe by design. Every HTTP response, 4xx or 5xx, is returned unchanged.
+- **The `GetBalance` integration test now waits for a quiet stack (P2-2).** It measures
+  global account totals, and a transfer left to the recovery worker by an earlier test
+  file posted a 1,000-paise journal in the middle of it. The test now waits until no
+  transfer is in flight before measuring, as `failurePaths` does. The assertions are
+  unchanged and exact.

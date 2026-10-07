@@ -1,0 +1,14 @@
+{
+  "name": "@switch/notification",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Phase 2: consumes transfer-events, deduplicates by event id, calls a simulated webhook with retries, dead-letters after 5 attempts. HTTP 9103.",
+  "main": "dist/main.js",
+  "dependencies": {
+    "@switch/common": "0.0.0",
+    "kafkajs": "2.2.4",
+    "pg": "8.23.1",
+    "prom-client": "15.1.3",
+    "zod": "4.6.5"
+  }
+}

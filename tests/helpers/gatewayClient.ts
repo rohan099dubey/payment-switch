@@ -19,17 +19,42 @@ export interface HttpResult<T = Record<string, unknown>> {
   body: T;
 }
 
+/**
+ * Above the Gateway's own 10 s Orchestrator deadline, so a slow but answered request is
+ * never cut off; a request with no answer at all fails instead of hanging the test.
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+const TRANSPORT_ATTEMPTS = 3;
+
+/**
+ * A network error with no HTTP response is retried, as the README tells every API client
+ * to do: it is safe by design, because a transfer is retried with the same
+ * `Idempotency-Key`. On Docker Desktop for Windows, a burst of new connections to a
+ * published port occasionally never reaches the container: in one run, 445 of 450
+ * requests arrived at the Gateway (ADR-021, 2026-10-07 amendment). Every HTTP response,
+ * 4xx or 5xx, is returned as is and never retried here.
+ */
 async function send<T>(
   method: string,
   path: string,
   headers: Record<string, string>,
   body?: unknown,
 ): Promise<HttpResult<T>> {
-  const res = await fetch(`${GATEWAY_URL}${path}`, {
-    method,
-    headers: body === undefined ? headers : { 'content-type': 'application/json', ...headers },
-    ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
-  });
+  let res: Response | undefined;
+  for (let attempt = 1; res === undefined; attempt++) {
+    try {
+      res = await fetch(`${GATEWAY_URL}${path}`, {
+        method,
+        headers: body === undefined ? headers : { 'content-type': 'application/json', ...headers },
+        ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      if (attempt >= TRANSPORT_ATTEMPTS) throw err;
+      const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      process.stderr.write(`gateway ${method} ${path}: no HTTP response (${reason}); retry ${attempt} of 2\n`);
+    }
+  }
   const text = await res.text();
   let parsed: unknown = text;
   try {

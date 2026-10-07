@@ -8,7 +8,10 @@ import { Pool } from 'pg';
 import { BankAdmin, type BankId } from './bankAdmin';
 import { DEV_CLIENTS, GatewayClient, type HttpResult } from './gatewayClient';
 import {
+  awaitNotified,
   awaitOutboxPublished,
+  checkI9,
+  loadNotificationFacts,
   readQuery,
   checkI8,
   loadOutboxFacts,
@@ -34,12 +37,16 @@ import { waitFor } from './stack';
 
 export const ORCH_DB = process.env.ORCHESTRATOR_DATABASE_URL ?? 'postgres://orch:orch@localhost:5433/orchestrator_db';
 export const LEDGER_DB = process.env.LEDGER_DATABASE_URL ?? 'postgres://ledger:ledger@localhost:5434/ledger_db';
+export const NOTIFY_DB =
+  process.env.NOTIFICATION_DATABASE_URL ?? 'postgres://notification:notification@localhost:5436/notification_db';
 
 export interface ChaosStack extends InvariantDeps {
   banks: BankAdmin;
   ledger: LedgerReader;
   orchDb: Pool;
   ledgerDb: Pool;
+  /** `notification_db` (phase 2, ADR-026), for I9. */
+  notifyDb: Pool;
   /** One API client per dev credential: each has its own rate-limit bucket. */
   clients: GatewayClient[];
   close: () => Promise<void>;
@@ -50,11 +57,13 @@ export function openStack(): ChaosStack {
   const ledger = new LedgerReader();
   const orchDb = new Pool({ connectionString: ORCH_DB, max: 4 });
   const ledgerDb = new Pool({ connectionString: LEDGER_DB, max: 2 });
+  const notifyDb = new Pool({ connectionString: NOTIFY_DB, max: 2 });
   return {
     banks,
     ledger,
     orchDb,
     ledgerDb,
+    notifyDb,
     concurrency: 32,
     clients: [DEV_CLIENTS.demo, DEV_CLIENTS.a, DEV_CLIENTS.b, DEV_CLIENTS.rateLimit].map((c) => GatewayClient.for(c)),
     close: async () => {
@@ -62,6 +71,7 @@ export function openStack(): ChaosStack {
       ledger.close();
       await orchDb.end();
       await ledgerDb.end();
+      await notifyDb.end();
     },
   };
 }
@@ -197,6 +207,9 @@ export async function evaluate(
   const ids = transfers.map((t) => t.id);
   await awaitOutboxPublished(stack.orchDb, ids, 120_000);
   const outbox = checkI8(await loadOutboxFacts(stack.orchDb, ids), await outboxCutoff(stack.orchDb), true);
+  // I9 (ADR-026): the notification service must catch up on every published event.
+  await awaitNotified(stack.orchDb, stack.notifyDb, ids, 180_000);
+  const notified = checkI9(await loadNotificationFacts(stack.orchDb, stack.notifyDb, ids));
   const results = [
     await checkI1(stack),
     await checkI2(stack, baseline),
@@ -206,6 +219,7 @@ export async function evaluate(
     checkI6(transfers),
     ...(duplicates === undefined ? [] : [checkI7(duplicates, transfers)]),
     outbox,
+    notified,
   ];
   return { results, transfers };
 }

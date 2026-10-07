@@ -46,6 +46,15 @@ const SERVICES: { service: string; url: string; metrics: Expected[] }[] = [
     ],
   },
   {
+    // Phase 2, item 2 (ADR-026): a pure Kafka consumer, so no gRPC metrics.
+    service: 'notification',
+    url: process.env.NOTIFICATION_HTTP_URL ?? 'http://localhost:9103',
+    metrics: [
+      { name: 'notifications_total', type: 'counter', labels: ['outcome'] },
+      { name: 'webhook_attempts_total', type: 'counter', labels: ['result'] },
+    ],
+  },
+  {
     service: 'ledger',
     url: process.env.LEDGER_HTTP_URL ?? 'http://localhost:9102',
     metrics: [...GRPC, { name: 'journals_posted_total', type: 'counter', labels: ['kind', 'replayed'] }],

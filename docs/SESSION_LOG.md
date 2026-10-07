@@ -1209,3 +1209,50 @@ smoke: transfer -> outbox row published 313 ms later; created_at equal to the te
   Redis still fails open at once (no offline queue). The test now also requires
   `rate_limit_fail_open_total` to stay unchanged during the burst. A 1 ms mutant fails
   it (355 passed against a limit of 303). ADR-019 amendment.
+
+---
+
+## 2026-10-07 — Session 3 (continued) — P2-1 merged; P2-2 Notification service
+
+**Status at end:** P2-1 `DONE` and on `main` (`4c813fb`; PR rohan099dubey/payment-switch#1).
+P2-2: every box ticked but CI. Branch `claude/p2-2-notification`.
+
+**Done**
+- P2-1 closed in a temporary `git worktree` (the CI tick and `DONE`), so the uncommitted
+  P2-2 work never touched P2-1's history. `main` was fast-forwarded and checked in the main
+  checkout (build, lint, typecheck, unit 630/630), then pushed.
+- `services/notification` (ADR-026): its own `postgres-notification`, `processed_events`
+  (PRIMARY KEY `event_id`) and `webhook_attempts`, a simulated webhook, 5 attempts with
+  200·2^n ms backoff, `transfer-events.dlq`, consumer group `notification`, invariant I9.
+- Both Kafka services now create only missing topics: kafkajs logs an error for every
+  topic that already exists, which looked like a failure on every restart.
+
+**Results (measured)**
+```text
+backlog: the new consumer group processed 51,878 events exactly once; 74 duplicates (relay redeliveries) dropped
+unit 657/657; integration 200/200 (12 files)
+TRANSFER_COUNT=10000 test:chaos seed 1: 9,467 / 519 / 14, I1-I9, I9 10,000 delivered (one read reset retried)
+TRANSFER_COUNT=10000 test:chaos seed 2: 9,403 / 523 / 74, I1-I9, I9 10,000 delivered
+npm run invariants -- --since 2026-10-07T11:53:36Z -> 20,484 transfers, I1-I6, I8, I9 hold
+unscoped checker: I9 over 51,909 published events (51,906 delivered, 3 dead-lettered)
+```
+
+**Gotchas**
+- **My Kafka test helper `JSON.parse`d every value.** The malformed-message dead letter
+  (`not an event`) made it throw inside kafkajs's `eachMessage`, so the read stalled and
+  the test timed out. The service was right: the console consumer showed the dead letter.
+  A Kafka handler must never throw on data it does not control.
+- **Two more Docker Desktop transport effects** (ADR-021 amendment). A 450-request burst
+  sometimes never fully reaches the Gateway: its logs showed 445 of 450 arrivals in the
+  failing runs and all 450 in the passing ones. The test client now has a timeout and
+  retries only when no HTTP response arrived, which is the README's own client rule.
+- The `GetBalance` integration test measured global totals while recovery finished an
+  earlier test's transfer (exactly +1,000 paise). It now waits for a quiet stack.
+- Python `\n` inside a bash heredoc can become a real newline in a TS template literal.
+  Check with `cat -A`.
+
+**Next action**
+- P2-2 PR and CI (including a manual `nightly`), then merge, then P2-3 reconciliation
+  (§19 item 3). Design note: finding "missing at bank" needs the ledger's journals for a
+  time window, which no ledger RPC offers yet. That will be an additive, read-only Ledger
+  RPC, with an ADR.

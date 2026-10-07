@@ -16,10 +16,10 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **P2-1 — Transactional outbox and Kafka** (phase 2, §19 item 1), branch `claude/p2-1-outbox-kafka`. Phase 1 (M0–M9) is `DONE` |
+| **Active milestone** | **P2-2 — Notification service** (phase 2, §19 item 2), branch `claude/p2-2-notification`. Phase 1 (M0–M9) and P2-1 are `DONE` |
 | **Definition of done** | **8 of 8 — phase 1 complete** (2026-10-07; the last box confirmed by the owner) |
 | **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. All three jobs green on `c5a82c1`. The first `nightly` found a real bug, fixed in ADR-024 |
-| **Next action** | See `docs/PROGRESS.md`, section P2-1. Then P2-2, the notification service (§19 item 2): it consumes `transfer-events` and deduplicates by `event_id` |
+| **Next action** | See `docs/PROGRESS.md`, section P2-2. Then P2-3, reconciliation (§19 item 3): bank `GetStatement`, breaks against ledger journals |
 | **Read first for phase 2** | `ARCHITECTURE.md` section 19 (each item is independent), plus `ADR-025` for how events look on the wire |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
@@ -45,6 +45,7 @@ speaks HTTP to the outside; everything internal is gRPC.
 | Gateway | HTTP 8080 | nothing durable (Redis = rate-limit buckets only) | Orchestrator |
 | Orchestrator | gRPC 50051, HTTP 9101 | `orchestrator_db`: `transfers`, `transfer_events`, `outbox` | both banks, Ledger; publishes to Kafka (outbox relay) |
 | Ledger | gRPC 50052, HTTP 9102 | `ledger_db`: `accounts`, `journals`, `entries` | nothing (leaf) |
+| Notification | HTTP 9103 | `notification_db` on `postgres-notification`: `processed_events`, `webhook_attempts` | nothing (consumes `transfer-events`, produces `transfer-events.dlq`) |
 | Mock Bank A | gRPC 50061, HTTP 9111 | db `bank_a` | nothing |
 | Mock Bank B | gRPC 50062, HTTP 9112 | db `bank_b` | nothing |
 
@@ -140,6 +141,7 @@ Computed against a baseline snapshot taken before each run.
 | **I6** | Everything finished — no non-terminal transfer, **zero** in `NEEDS_MANUAL_REVIEW` |
 | **I7** | Replays are idempotent — same transfer id, same final state |
 | **I8** | Outbox (phase 2): every terminal transfer since `0002_outbox.sql` has exactly one event of the matching type; none unpublished once quiet (ADR-025) |
+| **I9** | Notifications (phase 2): every published event has exactly one outcome in `processed_events`, `DELIVERED` unless the payee is a `whfail-` account (ADR-026) |
 
 ## Active deviations from ARCHITECTURE.md
 
@@ -163,6 +165,7 @@ Computed against a baseline snapshot taken before each run.
 | CI `nightly` runs the 10,000-transfer test **twice** (seeds 1, 2) plus an unscoped `npm run invariants`; jobs gated by event; diagrams rendered by `npx` mermaid-cli, not a dependency | `ADR-023` |
 | **A definite bank failure is fenced with `Resolve` before the failure branch** (the spec fails at once; a late earlier attempt could then still apply, which the first nightly CI run caught) | `ADR-024` |
 | Outbox: an event for **every** terminal state (incl. `NEEDS_MANUAL_REVIEW`), `UNIQUE (aggregate_id)`, amount as a string, **Kafka 3.9.1** (kafkajs predates 4.x), no `depends_on` Kafka, relay metrics, invariant I8 | `ADR-025` |
+| Notification: a dedicated `postgres-notification`, a deterministic simulated webhook (`whfail-` / `whflaky-` payees, a seeded rate), blocking retries 200·2^n ms, a dead letter for malformed messages, invariant I9 | `ADR-026` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
 

@@ -4,12 +4,24 @@ import { Kafka, logLevel } from 'kafkajs';
 
 export const KAFKA_HOST_BROKERS = (process.env.KAFKA_HOST_BROKERS ?? 'localhost:9094').split(',');
 export const TRANSFER_EVENTS_TOPIC = 'transfer-events';
+export const DLQ_TOPIC = 'transfer-events.dlq';
 
 export interface ConsumedEvent {
   key: string;
   headers: Record<string, string>;
-  value: Record<string, unknown>;
+  /** The parsed JSON value, or null when the value is not a JSON object (e.g. a malformed message). */
+  value: Record<string, unknown> | null;
+  raw: string;
   partition: number;
+}
+
+function parseObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -21,12 +33,21 @@ export async function readTransferEvents(
   keys: ReadonlySet<string>,
   timeoutMs = 60_000,
 ): Promise<Map<string, ConsumedEvent[]>> {
+  return readTopic(TRANSFER_EVENTS_TOPIC, keys, timeoutMs);
+}
+
+/** `readTransferEvents` for any topic, e.g. `transfer-events.dlq` (ADR-026). */
+export async function readTopic(
+  topic: string,
+  keys: ReadonlySet<string>,
+  timeoutMs = 60_000,
+): Promise<Map<string, ConsumedEvent[]>> {
   const kafka = new Kafka({ clientId: 'tests', brokers: KAFKA_HOST_BROKERS, logLevel: logLevel.NOTHING });
   const consumer = kafka.consumer({ groupId: `tests-${randomUUID()}` });
   const found = new Map<string, ConsumedEvent[]>();
   await consumer.connect();
   try {
-    await consumer.subscribe({ topic: TRANSFER_EVENTS_TOPIC, fromBeginning: true });
+    await consumer.subscribe({ topic, fromBeginning: true });
     await consumer.run({
       eachMessage: ({ message, partition }) => {
         const key = message.key?.toString() ?? '';
@@ -35,8 +56,9 @@ export async function readTransferEvents(
           for (const [name, raw] of Object.entries(message.headers ?? {})) {
             if (raw !== undefined) headers[name] = raw.toString();
           }
-          const value = JSON.parse(message.value?.toString() ?? 'null') as Record<string, unknown>;
-          found.set(key, [...(found.get(key) ?? []), { key, headers, value, partition }]);
+          // Never throw here: a throwing handler would stall the read (kafkajs retries it).
+          const raw = message.value?.toString() ?? '';
+          found.set(key, [...(found.get(key) ?? []), { key, headers, value: parseObject(raw), raw, partition }]);
         }
         return Promise.resolve();
       },
@@ -45,14 +67,27 @@ export async function readTransferEvents(
     while (found.size < keys.size) {
       if (Date.now() > until) {
         const missing = [...keys].filter((k) => !found.has(k));
-        throw new Error(
-          `${missing.length} of ${keys.size} keys not in ${TRANSFER_EVENTS_TOPIC}: ${missing.join(', ')}`,
-        );
+        throw new Error(`${missing.length} of ${keys.size} keys not in ${topic}: ${missing.join(', ')}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     return found;
   } finally {
     await consumer.disconnect();
+  }
+}
+
+/** Produces raw messages, e.g. a redelivered copy or a malformed message (ADR-026 tests). */
+export async function produceRaw(
+  topic: string,
+  messages: { key: string; value: string; headers: Record<string, string> }[],
+): Promise<void> {
+  const kafka = new Kafka({ clientId: 'tests', brokers: KAFKA_HOST_BROKERS, logLevel: logLevel.NOTHING });
+  const producer = kafka.producer({ allowAutoTopicCreation: false });
+  await producer.connect();
+  try {
+    await producer.send({ topic, acks: -1, messages });
+  } finally {
+    await producer.disconnect();
   }
 }

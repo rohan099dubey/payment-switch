@@ -15,12 +15,16 @@
  * terminal state after `0002_outbox.sql` was applied has exactly one outbox event of the
  * matching type, naming the same transfer, state and amount; once the stack is quiet,
  * none is unpublished.
+ *
+ * I9 (phase 2, ADR-026) follows the event one hop further: every published outbox event
+ * has exactly one outcome in the notification service's dedupe table, `DELIVERED`, or
+ * `DEAD_LETTERED` for a payee the simulated merchant always fails (`whfail-`).
  */
 import type { Pool, QueryResult, QueryResultRow } from 'pg';
 import type { BankAdmin, BankId } from './bankAdmin';
 import type { JournalView, LedgerReader } from './ledgerClient';
 
-export type InvariantId = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'I6' | 'I7' | 'I8';
+export type InvariantId = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'I6' | 'I7' | 'I8' | 'I9';
 
 export interface InvariantResult {
   id: InvariantId;
@@ -454,6 +458,82 @@ export async function awaitOutboxPublished(
     if (Date.now() >= until)
       throw new Error(`${r.rows[0]?.n ?? '?'} outbox events still unpublished after ${timeoutMs} ms`);
     await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+/** One published outbox event and its outcome in `notification_db` (I9). */
+export interface NotificationFacts {
+  eventId: string;
+  transferId: string;
+  payeeAccountId: string;
+  outcome: string | null;
+  attempts: number | null;
+}
+
+export async function loadNotificationFacts(
+  orchDb: Pool,
+  notifyDb: Pool,
+  transferIds: readonly string[],
+): Promise<NotificationFacts[]> {
+  const events = await readQuery<{ id: string; aggregate_id: string; payee: string }>(
+    orchDb,
+    `SELECT id::text AS id, aggregate_id, payload->'payee'->>'account_id' AS payee
+       FROM outbox WHERE aggregate_id = ANY($1::uuid[]) AND published_at IS NOT NULL`,
+    [[...transferIds]],
+  );
+  const ids = events.rows.map((e) => e.id);
+  const outcomes = await readQuery<{ event_id: string; outcome: string; attempts: number }>(
+    notifyDb,
+    'SELECT event_id::text AS event_id, outcome, attempts FROM processed_events WHERE event_id = ANY($1::bigint[])',
+    [ids],
+  );
+  const byId = new Map(outcomes.rows.map((o) => [o.event_id, o]));
+  return events.rows.map((e) => ({
+    eventId: e.id,
+    transferId: e.aggregate_id,
+    payeeAccountId: e.payee,
+    outcome: byId.get(e.id)?.outcome ?? null,
+    attempts: byId.get(e.id)?.attempts ?? null,
+  }));
+}
+
+/** I9: each published event has exactly one outcome (the primary key forbids a second). */
+export function checkI9(facts: NotificationFacts[]): InvariantResult {
+  const problems: string[] = [];
+  let delivered = 0;
+  let deadLettered = 0;
+  for (const f of facts) {
+    const expected = f.payeeAccountId.startsWith('whfail-') ? 'DEAD_LETTERED' : 'DELIVERED';
+    if (f.outcome === null) problems.push(`event ${f.eventId} (${f.transferId}): no outcome recorded`);
+    else if (f.outcome !== expected)
+      problems.push(`event ${f.eventId} (${f.transferId}): ${f.outcome}, expected ${expected}`);
+    else if (f.attempts === null || f.attempts < 1 || f.attempts > 5) {
+      problems.push(`event ${f.eventId}: ${String(f.attempts)} attempts`);
+    }
+    if (f.outcome === 'DELIVERED') delivered++;
+    if (f.outcome === 'DEAD_LETTERED') deadLettered++;
+  }
+  return result(
+    'I9',
+    `${facts.length} published events: ${delivered} delivered, ${deadLettered} dead-lettered`,
+    problems,
+  );
+}
+
+/** Waits until the notification service has recorded an outcome for every published event. */
+export async function awaitNotified(
+  orchDb: Pool,
+  notifyDb: Pool,
+  transferIds: readonly string[],
+  timeoutMs: number,
+): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const missing = (await loadNotificationFacts(orchDb, notifyDb, transferIds)).filter((f) => f.outcome === null);
+    if (missing.length === 0) return;
+    if (Date.now() >= until)
+      throw new Error(`${missing.length} published events have no outcome after ${timeoutMs} ms`);
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 
