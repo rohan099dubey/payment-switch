@@ -310,8 +310,8 @@ remote `rohan099dubey/payment-switch`. Details: `ADR-024`, the ADR-021 amendment
 
 From spec §20. Phase 2 (§19) starts only when every box here is ticked.
 
-Checked in M9 and after the first CI runs (2026-10-07). Seven of eight are ticked; the
-last one is the owner's to confirm.
+Checked in M9 and after the first CI runs (2026-10-07). **All eight are ticked: phase 1 is
+complete.**
 
 - [x] `npm run stack:up` starts all services with no manual steps, and `npm run seed` creates demo accounts (clean-room project with empty volumes, ADR-023: 9/9 healthy, exit 0; seed "10 created", then "0 created, 10 already existed")
 - [x] Every proto file, schema, env var, endpoint and error code matches `ARCHITECTURE.md`, apart from the deviations recorded in ADRs 009–023. Checked by script, not by eye: the three protos are byte-identical to §9; every §10 SQL statement appears verbatim in the migrations, and the only extras are ADR-015's two `TRUNCATE` triggers; every §15 variable is in its service's `config.ts` with the spec default, and in `.env.example`; all six §5 endpoints are registered; every error code named in §5, §7, §8 and §14 appears in the source
@@ -320,4 +320,4 @@ last one is the owner's to confirm.
 - [x] The crash recovery test passes (three times in M9; twice locally and three times on GitHub on `c5a82c1`; every run's registered transfers all `SUCCESS`, I1–I6)
 - [x] k6 results recorded in `docs/benchmarks.md`, invariants held during the load run (three measured rows from M8, each with its invariant check; not re-run since. ADR-024 adds a call only on a bank refusal, and the load runs had none: every transfer ended `SUCCESS`)
 - [x] README complete, diagrams rendered, all eight ADRs written
-- [ ] **OPEN: the owner's to confirm.** Every milestone has its five "What I built and why" lines (M0–M9, counted), *and the owner can explain each one without notes*. Only the owner can check the second half
+- [x] Every milestone has its five "What I built and why" lines (M0–M9, counted), *and the owner can explain each one without notes* (the owner confirmed in chat, 2026-10-07)

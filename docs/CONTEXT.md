@@ -17,7 +17,7 @@ crashes mid-transfer.
 | | |
 |---|---|
 | **Active milestone** | **None. Phase 1 milestones M0–M9 are all `DONE`.** |
-| **Definition of done** | 7 of 8 ticked. **Open:** "explainable without notes", the owner's to confirm. Phase 2 (§19) starts only when all 8 are ticked (the owner chose to close phase 1 first) |
+| **Definition of done** | **8 of 8 — phase 1 complete** (2026-10-07; the last box confirmed by the owner) |
 | **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. All three jobs green on `c5a82c1`. The first `nightly` found a real bug, fixed in ADR-024 |
 | **Next action** | The owner confirms the last DoD box. Optional: reset the dev stack again to clear the two red-test transfers (ADR-021 amendment) |
 | **Read first for phase 2** | `ARCHITECTURE.md` section 19 (Phase 2 extensions), and only once the definition of done is complete |
