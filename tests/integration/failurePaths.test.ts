@@ -175,6 +175,46 @@ describe('failurePaths — definite failures still end where they should', () =>
   });
 });
 
+/**
+ * ADR-024. A definite failure is final only once the reference is fenced. Business
+ * rejections leave no operation row, so an earlier attempt that timed out (chaos
+ * `late_apply`, a slow network) could still apply after the switch took the failure
+ * branch. The nightly CI run of 2026-10-07 lost 41,693 paise that way. Each test plays
+ * that late attempt after the transfer is terminal, once it *could* succeed.
+ */
+describe('failurePaths — a definite failure is fenced against a late request (ADR-024)', () => {
+  it('a late Debit after FAILED / INSUFFICIENT_FUNDS is refused, though the payer can now afford it', async () => {
+    const { payer, payee } = await accounts(10n);
+    const res = await client.createTransfer(body(payer, payee), uniqueId('key'));
+    expect(res.body).toMatchObject({ state: 'FAILED', failure_code: 'INSUFFICIENT_FUNDS' });
+    const id = idOf(res);
+
+    // Money arrives for the payer, as in the nightly failure, then the late Debit lands.
+    expect(await banks.sendMoney('bank_a', 'credit', uniqueId('topup'), payer, 5000n)).toBe('APPLIED');
+    expect(await banks.sendMoney('bank_a', 'debit', id, payer, 1000n)).toBe('REFERENCE_VOIDED');
+
+    expect(await banks.balance('bank_a', payer)).toBe(5010n);
+    expect(await bankOps(id)).toEqual({ DEBIT: 'VOIDED' });
+    expect(await journalKinds(id)).toEqual([]);
+  });
+
+  it('a late Credit after REVERSED / PAYEE_ACCOUNT_NOT_FOUND is refused once the account exists', async () => {
+    const payer = uniqueId('payer');
+    const payee = uniqueId('late-payee');
+    await banks.createAccount('bank_a', payer, 5000n);
+    const res = await client.createTransfer(body(payer, payee), uniqueId('key'));
+    expect(res.body).toMatchObject({ state: 'REVERSED', failure_code: 'PAYEE_ACCOUNT_NOT_FOUND' });
+    const id = idOf(res);
+
+    await banks.createAccount('bank_b', payee, 0n);
+    expect(await banks.sendMoney('bank_b', 'credit', id, payee, 1000n)).toBe('REFERENCE_VOIDED');
+
+    expect(await banks.balance('bank_b', payee)).toBe(0n);
+    expect(await banks.balance('bank_a', payer)).toBe(5000n);
+    expect(await journalKinds(id)).toEqual(['TRANSFER_DEBIT_LEG', 'TRANSFER_REVERSAL']);
+  });
+});
+
 describe('failurePaths — recovery', () => {
   it('a payer bank down for a few seconds still reaches SUCCESS once it returns', { timeout: 60_000 }, async () => {
     const { payer, payee } = await accounts(10_000n);

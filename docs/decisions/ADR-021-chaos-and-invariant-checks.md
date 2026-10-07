@@ -93,8 +93,12 @@ mutation runs use their own databases, never the shared ones.
 - **The M3 mutation artifacts are gone.** The owner reset the development stack on
   2026-10-07 after a verified `pg_dumpall` backup
   (`D:\WORK\DEV\PROJECTS\PaymentSwitch_DEL_backups\2026-10-07-pre-reset\`). The unscoped
-  `npm run invariants` passes on the reset stack. `--since` is still useful to check
-  just one run.
+  `npm run invariants` passed on the reset stack. Afterwards, the ADR-024 red tests were
+  (wrongly) run against the shared development stack while the bug was still live. They
+  left exactly two inconsistent transfers: `c9346799` (FAILED, late debit applied, −1,000
+  at bank_a) and `5c784905` (REVERSED, late credit applied, +1,000 at bank_b). The
+  unscoped check reports I4/I5 for those two only, until the next reset. Red tests
+  against unfixed code belong in a throwaway Compose project.
 - **Crash test: `registered` can be less than `sent`.** The crash test sends each request
   once and never retries it. A request that reaches the Gateway while the Orchestrator is
   dead, before its `transfers` row is inserted, gets a retry-safe `503` and has no row and

@@ -300,9 +300,10 @@ describe('CreateTransfer — FAILED (definite debit failures)', () => {
     expect(await balanceOf('bank_b', payee)).toBe(0n);
     expect(delta).toEqual({});
     expect(await journalsFor(final.transferId)).toEqual([]);
-    // The bank rolled the rejection back completely: no operation row.
+    // The bank rolled the rejection back (no money moved), and the switch then fenced the
+    // reference with Resolve before failing: a VOIDED tombstone, never APPLIED (ADR-024).
     expect(await operationStatus('bank_a', final.transferId, OperationType.OPERATION_TYPE_DEBIT)).toBe(
-      OperationStatus.OPERATION_STATUS_NOT_FOUND,
+      OperationStatus.OPERATION_STATUS_VOIDED,
     );
 
     const events = await eventsFor(final.transferId);
@@ -360,8 +361,9 @@ describe('CreateTransfer — REVERSED (definite credit failures)', () => {
     expect(await operationStatus('bank_a', id, OperationType.OPERATION_TYPE_REVERSE_DEBIT)).toBe(
       OperationStatus.OPERATION_STATUS_APPLIED,
     );
+    // Fenced before REVERSING (ADR-024): a late Credit for this reference can never apply.
     expect(await operationStatus('bank_b', id, OperationType.OPERATION_TYPE_CREDIT)).toBe(
-      OperationStatus.OPERATION_STATUS_NOT_FOUND,
+      OperationStatus.OPERATION_STATUS_VOIDED,
     );
 
     const events = await eventsFor(id);

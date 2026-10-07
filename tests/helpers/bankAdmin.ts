@@ -1,5 +1,5 @@
 /** gRPC admin access to both Mock Banks (ports 50061 / 50062), section 16. */
-import { callUnary, makeClient } from '@switch/common';
+import { callUnary, errorCodeOf, makeClient } from '@switch/common';
 import { BankServiceClient, OperationStatus, OperationType, type ChaosConfig } from '@switch/proto-gen/bank/v1';
 
 export type BankId = 'bank_a' | 'bank_b';
@@ -60,6 +60,32 @@ export class BankAdmin {
           ? 'VOIDED'
           : 'NOT_FOUND';
     return { status, amount: BigInt(res.amount) };
+  }
+
+  /**
+   * A raw `Debit` or `Credit`, as the Orchestrator would send it. Tests use it to play a
+   * request that arrives late, after the switch already decided the transfer. Resolves
+   * to `APPLIED` or to the bank's `x-error-code`.
+   */
+  async sendMoney(
+    bank: BankId,
+    operation: 'debit' | 'credit',
+    referenceId: string,
+    accountId: string,
+    amount: bigint,
+  ): Promise<string> {
+    const c = this.clients[bank];
+    const call = operation === 'debit' ? c.debit.bind(c) : c.credit.bind(c);
+    try {
+      const res = await callUnary(
+        call,
+        { referenceId, accountId, amount: amount.toString(), currency: 'INR' },
+        { timeoutMs: TIMEOUT_MS },
+      );
+      return res.status === OperationStatus.OPERATION_STATUS_APPLIED ? 'APPLIED' : `status ${res.status}`;
+    } catch (err) {
+      return errorCodeOf(err) ?? String(err);
+    }
   }
 
   /** Back to the defaults docker-compose.yml starts the banks with: no chaos. */

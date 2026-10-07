@@ -8,14 +8,14 @@ stateDiagram-v2
     INITIATED --> DEBIT_SENT : persist intent<br/>before calling bank
 
     DEBIT_SENT --> DEBITED : bank Debit applied<br/>AND ledger debit-leg posted
-    DEBIT_SENT --> FAILED : definite failure<br/>INSUFFICIENT_FUNDS<br/>PAYER_ACCOUNT_NOT_FOUND<br/>PAYER_ACCOUNT_BLOCKED
+    DEBIT_SENT --> FAILED : definite failure, fenced<br/>(Resolve VOIDED, ADR-024)<br/>INSUFFICIENT_FUNDS<br/>PAYER_ACCOUNT_NOT_FOUND<br/>PAYER_ACCOUNT_BLOCKED
     DEBIT_SENT --> DEBIT_SENT : unknown outcome<br/>retry inline, then recovery
     DEBIT_SENT --> FAILED : Resolve returned VOIDED<br/>DEBIT_NOT_CONFIRMED
 
     DEBITED --> CREDIT_SENT : persist intent<br/>before calling bank
 
     CREDIT_SENT --> CREDITED : bank Credit applied<br/>AND ledger credit-leg posted
-    CREDIT_SENT --> REVERSING : definite failure<br/>PAYEE_ACCOUNT_NOT_FOUND<br/>PAYEE_ACCOUNT_BLOCKED
+    CREDIT_SENT --> REVERSING : definite failure, fenced<br/>(Resolve VOIDED, ADR-024)<br/>PAYEE_ACCOUNT_NOT_FOUND<br/>PAYEE_ACCOUNT_BLOCKED
     CREDIT_SENT --> CREDIT_SENT : unknown outcome<br/>retry inline, then recovery
     CREDIT_SENT --> REVERSING : Resolve returned VOIDED<br/>CREDIT_NOT_CONFIRMED
 

@@ -73,7 +73,7 @@ Each step has three possible outcomes, and that distinction is the heart of the 
 
 | Outcome | Means | Reaction |
 |---|---|---|
-| `DEFINITE_FAILURE` | bank said no (`FAILED_PRECONDITION`, `NOT_FOUND`) | take the failure branch |
+| `DEFINITE_FAILURE` | bank said no (`FAILED_PRECONDITION`, `NOT_FOUND`) | **fence first** with `Resolve` (ADR-024): `VOIDED` → failure branch, `APPLIED` → the step succeeded after all, no answer → stay |
 | `UNKNOWN_OUTCOME` | timeout, `UNAVAILABLE`, socket reset — **money may or may not have moved** | stay in state; retry inline, then recovery, then settle with the bank's `Resolve` |
 | `BUG` | invariant broken (`INVALID_ARGUMENT`, ledger rejecting a journal) | `NEEDS_MANUAL_REVIEW`, never retried |
 
@@ -103,8 +103,10 @@ The primary key arbitrates the race. Once `Resolve` answers, the answer never ch
 ## Non-negotiable rules
 
 1. **Persist intent before every external call.** That is what `*_SENT` exists for.
-2. **A timeout is an unknown outcome, never a failure.** Only a definite failure, or
-   `Resolve` returning `VOIDED`, moves a transfer to a failure state.
+2. **A timeout is an unknown outcome, never a failure.** A transfer reaches a failure
+   state only once its reference holds a `VOIDED` tombstone at the bank, from `Resolve`
+   or proven by a `REFERENCE_VOIDED` answer. A definite refusal is fenced with `Resolve`
+   first, because an earlier attempt for the same reference may still apply (ADR-024).
 3. **Every state change is a compare-and-set on `version`** plus a `transfer_events`
    row, in one transaction. Zero rows updated means `StaleTransferError`: stop driving,
    do not retry the write.
@@ -150,6 +152,7 @@ Computed against a baseline snapshot taken before each run.
 | Recovery: `Resolve` lives in `SagaEngine.settle`, the lease is renewed before each drive, events record `driver` + `lease_owner` | `ADR-020` |
 | Orchestrator: CAS also matches `state`; unrecognised bank errors are `BANK_INVARIANT_VIOLATION`; `INVALID_REQUEST`/`TRANSFER_NOT_FOUND` codes; extra startup checks | `ADR-018` |
 | CI `nightly` runs the 10,000-transfer test **twice** (seeds 1, 2) plus an unscoped `npm run invariants`; jobs gated by event; diagrams rendered by `npx` mermaid-cli, not a dependency | `ADR-023` |
+| **A definite bank failure is fenced with `Resolve` before the failure branch** (the spec fails at once; a late earlier attempt could then still apply, which the first nightly CI run caught) | `ADR-024` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
 
