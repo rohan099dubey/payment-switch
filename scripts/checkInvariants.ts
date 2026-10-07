@@ -1,7 +1,8 @@
 /**
  * `npm run invariants`: checks I1–I6 (section 16) and I8 (the outbox, ADR-025) against the
  * live stack, for every transfer the Orchestrator knows, or only those created since
- * `--since <ISO time>`. I8 expects a quiet stack: every outbox event published.
+ * `--since <ISO time>`. I8 expects a quiet stack: every outbox event published. I9 (ADR-026)
+ * expects the notification service to have recorded an outcome for each published event.
  *
  * There is no baseline here, so I2–I4 are evaluated per transfer: the bank operations and
  * journals carrying the in-scope transfer ids must add up (`checkScoped`). That is exact
@@ -17,6 +18,8 @@ import {
   checkI5,
   checkI6,
   checkI8,
+  checkI9,
+  loadNotificationFacts,
   loadOutboxFacts,
   outboxCutoff,
   checkScoped,
@@ -29,6 +32,8 @@ import { LedgerReader } from '../tests/helpers/ledgerClient';
 
 const ORCH_DB = process.env.ORCHESTRATOR_DATABASE_URL ?? 'postgres://orch:orch@localhost:5433/orchestrator_db';
 const LEDGER_DB = process.env.LEDGER_DATABASE_URL ?? 'postgres://ledger:ledger@localhost:5434/ledger_db';
+const NOTIFY_DB =
+  process.env.NOTIFICATION_DATABASE_URL ?? 'postgres://notification:notification@localhost:5436/notification_db';
 const BANK_DBS = {
   bank_a: process.env.BANK_A_DATABASE_URL ?? 'postgres://banks:banks@localhost:5435/bank_a',
   bank_b: process.env.BANK_B_DATABASE_URL ?? 'postgres://banks:banks@localhost:5435/bank_b',
@@ -88,7 +93,21 @@ async function main(): Promise<number> {
       await outboxCutoff(deps.orchDb),
       true,
     );
-    const results = [await checkI1(deps), i2, i3, i4, checkI5(evidence), checkI6(transfers), i8].filter(
+    // I9 (ADR-026): every published event has exactly one outcome in notification_db.
+    const notifyDb = new Pool({ connectionString: NOTIFY_DB, max: 1 });
+    let i9;
+    try {
+      i9 = checkI9(
+        await loadNotificationFacts(
+          deps.orchDb,
+          notifyDb,
+          transfers.map((t) => t.id),
+        ),
+      );
+    } finally {
+      await notifyDb.end();
+    }
+    const results = [await checkI1(deps), i2, i3, i4, checkI5(evidence), checkI6(transfers), i8, i9].filter(
       (r) => r !== undefined,
     );
     process.stdout.write(`${formatResults(results)}\n`);

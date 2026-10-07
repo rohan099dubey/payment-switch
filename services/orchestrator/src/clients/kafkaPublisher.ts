@@ -87,11 +87,14 @@ export class KafkaPublisher implements EventPublisher {
     const admin = this.kafka.admin();
     await admin.connect();
     try {
-      // false: it already existed. Several instances may race here; both outcomes are fine.
-      await admin.createTopics({
-        topics: [{ topic: this.options.topic, numPartitions: this.options.partitions, replicationFactor: 1 }],
-        waitForLeaders: true,
-      });
+      // Only when missing: kafkajs logs an error for a topic that already exists. Several
+      // instances may still race to create it; createTopics then resolves false, which is fine.
+      if (!(await admin.listTopics()).includes(this.options.topic)) {
+        await admin.createTopics({
+          topics: [{ topic: this.options.topic, numPartitions: this.options.partitions, replicationFactor: 1 }],
+          waitForLeaders: true,
+        });
+      }
       this.topicReady = true;
     } finally {
       await admin.disconnect();

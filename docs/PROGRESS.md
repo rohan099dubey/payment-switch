@@ -21,6 +21,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M8 | Load & metrics | `DONE` | 16, 17 | 2026-10-06 | see `git log --grep "M8"` |
 | M9 | Polish | `DONE` | 17, 20 | 2026-10-07 | see `git log --grep "M9"` |
 | P2-1 | Transactional outbox & Kafka (phase 2, §19 item 1) | `DONE` | 6, 19 (+ ADR-025) | 2026-10-07 | see `git log --grep "P2-1"` |
+| P2-2 | Notification service (phase 2, §19 item 2) | `IN_PROGRESS` | 19 (+ ADR-025, ADR-026) | — | — |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -350,3 +351,30 @@ Acceptance
 - [x] The 10,000-transfer test passes twice with different seeds, with **I8** holding for every transfer (seed 1: 9,469 / 518 / 13; seed 2: 9,396 / 524 / 80; I1–I8 hold, 0 manual review; the crash recovery test passes in both runs with I8. An earlier pair of runs failed on a Docker Desktop connection reset in the harness, not in the system: see the ADR-021 amendment)
 - [x] `npm run invariants` (I1–I6, I8) green after the runs (`--since 2026-10-07T08:36:46Z`: 20,400 transfers, all hold)
 - [x] CI green on GitHub: PR rohan099dubey/payment-switch#1, `static` and `integration` on `6b7d15c`; `nightly` (both 10,000-transfer seeds plus unscoped invariants with I8) on the branch, run 37595915237. The first PR run failed a Gateway burst test, which exposed a too-short Redis timeout; fixed (ADR-019 amendment)
+
+## P2-2 — Notification service (phase 2, §19 item 2)
+
+**Scope:** `services/notification`: Kafka consumer group `notification`, a dedupe table
+keyed by event id, a simulated webhook with exponential-backoff retries, and the
+dead-letter topic `transfer-events.dlq` after 5 failed attempts. Interpretations: `ADR-026`.
+
+Implementation
+- [x] Service skeleton per §3 (`main.ts`, `config.ts`, `domain/`, `repo/`, `clients/`, `migrations/`), in the root tsconfig references and the shared Dockerfile
+- [x] `migrations/0001_init.sql`: `processed_events` (PRIMARY KEY `event_id`, outcome `CHECK`), `webhook_attempts`
+- [x] `domain/events.ts`: validates the ADR-025 wire format (header and value event ids agree, key = transfer id)
+- [x] `domain/webhook.ts`: `WebhookPort` and the simulated merchant (`whfail-`, `whflaky-`, a seeded rate, latency)
+- [x] `domain/processor.ts`: dedupe, 5 attempts with backoff 200·2^n ms, dead letter with reason and attempts, outcome via `ON CONFLICT DO NOTHING`; database errors propagate so the offset is not committed
+- [x] `clients/kafka.ts`: topics created only if missing, an idempotent `acks=all` dead-letter producer, consumer group `notification` from the beginning
+- [x] Compose: `postgres-notification` (5436) and `notification` (9103); `.env.example`
+- [x] Metrics `notifications_total{outcome}`, `webhook_attempts_total{result}`
+- [x] Invariant **I9** in the shared helpers, both chaos tests and `npm run invariants`
+- [x] The architecture diagram shows the service, its database and the dead-letter topic
+
+Acceptance
+- [x] Unit: 25 tests (parsing, the simulated webhook, processor paths including a race and a database error). A no-dedupe mutant fails 2 of them; I9 checks have their own tests
+- [x] Integration (`tests/integration/notification.test.ts`, 6): delivered on attempt 1; a flaky merchant delivered on attempt 3 with measured 200/400 ms gaps; an always-failing merchant gets 5 attempts (gaps ≥ 200/400/800/1,600 ms), then appears in `transfer-events.dlq` with reason and headers; a redelivered copy is a duplicate (no second webhook call); a malformed message is dead-lettered as `INVALID_MESSAGE`; events published while the service is down are all processed after its restart
+- [x] Backlog on the development stack: the new consumer group processed all 51,878 earlier events exactly once and counted 74 relay redeliveries as duplicates
+- [x] Full integration suite green: 200/200 in 12 files (two harness fixes on the way, both in the ADR-021 amendment: the `GetBalance` test waits for a quiet stack, and the test HTTP client retries a request with no HTTP response)
+- [x] The 10,000-transfer test passes twice with different seeds, with **I8 and I9** holding (seed 1: 9,467 / 519 / 14; seed 2: 9,403 / 523 / 74; I1–I9, 0 manual review; I9 10,000 of 10,000 delivered each run; crash recovery passes in both with I8 and I9. In seed 1 one verification read hit the Docker Desktop reset and `readQuery` retried it, as designed)
+- [x] `npm run invariants` (I1–I6, I8, I9) green after the runs (`--since 2026-10-07T11:53:36Z`: 20,484 transfers, all hold; I9 20,483 delivered, 1 dead-lettered, the integration test's `whfail-` payee)
+- [ ] CI green on GitHub

@@ -10,9 +10,11 @@ import {
   checkI6,
   checkI7,
   checkI8,
+  checkI9,
   checkScoped,
   readQuery,
   type Evidence,
+  type NotificationFacts,
   type OutboxFacts,
   type RunTransfer,
 } from './invariants';
@@ -233,5 +235,29 @@ describe('readQuery (ADR-021, 2026-10-07 amendment)', () => {
     const { pool, calls } = fakePool([sqlError, ok]);
     await expect(readQuery(pool, 'SELECT 1')).rejects.toThrow('relation does not exist');
     expect(calls()).toBe(1);
+  });
+});
+
+describe('checkI9 (notifications, ADR-026)', () => {
+  const fact = (overrides: Partial<NotificationFacts> = {}): NotificationFacts => ({
+    eventId: '1',
+    transferId: 't1',
+    payeeAccountId: 'ACC002',
+    outcome: 'DELIVERED',
+    attempts: 1,
+    ...overrides,
+  });
+
+  it('holds when each published event has its expected outcome', () => {
+    expect(
+      checkI9([fact(), fact({ eventId: '2', payeeAccountId: 'whfail-x', outcome: 'DEAD_LETTERED', attempts: 5 })]).ok,
+    ).toBe(true);
+  });
+
+  it('fails an event with no outcome, the wrong outcome, or an impossible attempt count', () => {
+    expect(checkI9([fact({ outcome: null, attempts: null })]).ok).toBe(false);
+    expect(checkI9([fact({ outcome: 'DEAD_LETTERED' })]).ok).toBe(false);
+    expect(checkI9([fact({ payeeAccountId: 'whfail-x' })]).ok).toBe(false);
+    expect(checkI9([fact({ attempts: 6 })]).ok).toBe(false);
   });
 });

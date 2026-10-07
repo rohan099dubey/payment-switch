@@ -41,6 +41,23 @@ services:
       timeout: 3s
       retries: 10
 
+  # Phase 2, item 2 (ADR-026): the notification service's own database (ADR-007).
+  postgres-notification:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: notification
+      POSTGRES_PASSWORD: notification
+      POSTGRES_DB: notification_db
+    ports:
+      - '5436:5432'
+    volumes:
+      - notification-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-h', '127.0.0.1', '-U', 'notification', '-d', 'notification_db']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   postgres-banks:
     image: postgres:16
     environment:
@@ -124,6 +141,36 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # Phase 2, item 2 (ARCHITECTURE.md section 19, ADR-026): consumes transfer-events,
+  # deduplicates by event id, calls a simulated webhook, dead-letters after 5 attempts.
+  # It depends on Kafka (it is a Kafka consumer); nothing on the payment path depends on it.
+  notification:
+    build:
+      context: .
+      args:
+        SERVICE: notification
+    environment:
+      LOG_LEVEL: info
+      HTTP_PORT: '9103'
+      DATABASE_URL: postgres://notification:notification@postgres-notification:5432/notification_db
+      KAFKA_BROKERS: kafka:9092
+      WEBHOOK_RETRY_BASE_MS: '200'
+      WEBHOOK_FAILURE_RATE: '0'
+      WEBHOOK_SEED: '42'
+      WEBHOOK_LATENCY_MS: '0'
+    ports:
+      - '9103:9103'
+    depends_on:
+      postgres-notification:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:9103/readyz']
+      interval: 5s
+      timeout: 3s
+      retries: 24
 
   # One codebase, two instances. Each owns one database on postgres-banks.
   bank-a:
@@ -267,3 +314,4 @@ volumes:
   ledger-data:
   banks-data:
   kafka-data:
+  notification-data:

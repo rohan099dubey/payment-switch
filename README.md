@@ -23,7 +23,11 @@ Every finished transfer also emits an event to Kafka topic `transfer-events` thr
 **transactional outbox**: the event row is written in the same database transaction as the
 final state change, and a relay publishes it (at-least-once, deduplicate by `event_id`).
 Kafka is never on the payment path: if it is down, payments go on and events wait
-([ADR-025](docs/decisions/ADR-025-outbox-and-kafka.md)).
+([ADR-025](docs/decisions/ADR-025-outbox-and-kafka.md)). A **notification service** (HTTP
+9103, its own database) consumes those events, deduplicates them by event id, calls a
+simulated merchant webhook with exponential backoff, and dead-letters an event to
+`transfer-events.dlq` after 5 failed attempts
+([ADR-026](docs/decisions/ADR-026-notification-service.md)).
 
 Each transfer is a persisted state machine driven by the Orchestrator. It has ten states,
 four of them terminal, and **a timeout never changes the state**:
@@ -159,11 +163,12 @@ Seven invariants are checked against a baseline snapshot taken before each run:
 | **I6** | Everything finished: no non-terminal transfer and **zero** in `NEEDS_MANUAL_REVIEW` |
 | **I7** | Replays are idempotent: same transfer id, same final state |
 | **I8** | Every finished transfer has exactly one outbox event of the matching type, and none stays unpublished (phase 2, [ADR-025](docs/decisions/ADR-025-outbox-and-kafka.md)) |
+| **I9** | Every published event has exactly one notification outcome: delivered, or dead-lettered when the merchant always fails (phase 2, [ADR-026](docs/decisions/ADR-026-notification-service.md)) |
 
 ```bash
 npm run test:chaos                          # crash recovery + the 10,000-transfer invariant test
 TRANSFER_COUNT=1000 npm run test:chaos      # the CI size
-npm run invariants                          # I1-I6 and I8 against the live stack, every transfer
+npm run invariants                          # I1-I6, I8 and I9 against the live stack, every transfer
 npm run invariants -- --since 2026-10-07T00:00:00Z   # only transfers created since then
 ```
 
@@ -294,6 +299,7 @@ Where the implementation fills a gap in the specification or deviates from it:
 | [023](docs/decisions/ADR-023-m9-polish-details.md) | CI job layout, diagram rendering, readiness probes in `repo/` |
 | [024](docs/decisions/ADR-024-fence-definite-failures.md) | A definite bank refusal is fenced with `Resolve` before the failure branch (found by the first nightly CI run) |
 | [025](docs/decisions/ADR-025-outbox-and-kafka.md) | Transactional outbox and Kafka (phase 2): an event for every terminal state, money as a string, Kafka 3.9 for kafkajs, no Kafka on the payment path |
+| [026](docs/decisions/ADR-026-notification-service.md) | Notification service (phase 2): its own database, a dedupe table keyed by event id, a deterministic simulated webhook, 5 attempts then the dead-letter topic |
 
 ## 8. What I built and why
 
@@ -375,3 +381,10 @@ Five lines after each milestone, each one explainable out loud without notes.
 3. Kafka is deliberately kept off the payment path. A test stops Kafka and sends payments that all succeed; their events wait in the outbox and arrive once Kafka is back.
 4. "Same transaction" is proven, not assumed: Postgres fixes `now()` per transaction, so the event and the state change carry identical timestamps. A planted dual-write bug, run on a throwaway stack, fails exactly those tests.
 5. A new invariant, I8 (every finished transfer has exactly one matching event, and all are published), held across two 10,000-transfer chaos runs with Orchestrator kills. The database itself enforces one event per transfer.
+
+**P2-2 — Notification service** (phase 2)
+1. A separate service consumes the transfer events from Kafka and calls a merchant webhook for each one. It has its own database, so it can never touch the money path.
+2. A delivery can arrive more than once (at-least-once), so every event is deduplicated by its event id, using a database primary key rather than application logic. When this consumer first started, it processed a backlog of 51,878 events exactly once and correctly dropped 74 redeliveries.
+3. A failing merchant gets 5 attempts with exponential backoff (200, 400, 800, 1,600 ms, measured in the tests). After that the event goes to a dead-letter topic with the reason and attempt count, so nothing is silently lost.
+4. Failure is tested deterministically: payees named `whfail-` or `whflaky-` make the simulated merchant always fail or recover on attempt 3, with no test-only backdoor. A malformed message is dead-lettered at once instead of blocking its partition forever.
+5. A new invariant, I9, says every published event reaches exactly one outcome (delivered or dead-lettered). It held for all 10,000 transfers in each of two chaos runs, and a restarted service missed nothing.

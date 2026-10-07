@@ -17,10 +17,12 @@ import {
 } from '@switch/proto-gen/ledger/v1';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { waitFor } from '../helpers/stack';
 
 const LEDGER_ADDR = process.env.LEDGER_GRPC_ADDR ?? 'localhost:50052';
 const LEDGER_HTTP = process.env.LEDGER_HTTP_URL ?? 'http://localhost:9102';
 const LEDGER_DB = process.env.LEDGER_DATABASE_URL ?? 'postgres://ledger:ledger@localhost:5434/ledger_db';
+const ORCH_DB = process.env.ORCHESTRATOR_DATABASE_URL ?? 'postgres://orch:orch@localhost:5433/orchestrator_db';
 const TIMEOUT_MS = 10_000;
 
 const D = EntryDirection.ENTRY_DIRECTION_DEBIT;
@@ -388,7 +390,24 @@ describe('ListJournals', () => {
 });
 
 describe('GetBalance', () => {
-  it('computes the normal-side balance for ASSET and LIABILITY accounts', async () => {
+  it('computes the normal-side balance for ASSET and LIABILITY accounts', { timeout: 120_000 }, async () => {
+    // These are global account totals, so nothing else may post while they are measured.
+    // Earlier test files leave transfers for the recovery worker to finish; wait for them.
+    const orchDb = new Pool({ connectionString: ORCH_DB, max: 1 });
+    try {
+      await waitFor(
+        'no transfer in flight',
+        async () =>
+          (
+            await orchDb.query<{ n: number }>(
+              "SELECT count(*)::int AS n FROM transfers WHERE state NOT IN ('SUCCESS','FAILED','REVERSED','NEEDS_MANUAL_REVIEW')",
+            )
+          ).rows[0]?.n === 0,
+        110_000,
+      );
+    } finally {
+      await orchDb.end();
+    }
     const id = newTransferId();
     const amount = 12_500n;
     const before = {
