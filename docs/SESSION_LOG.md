@@ -1026,3 +1026,32 @@ clean-room project payment-switch-fresh (ADR-023):
 - Reset the development stack to clear the M3 artifacts (ADR-021)? The owner's call. It
   has not been done.
 - Add a GitHub remote? The owner's call. Nothing has been pushed.
+
+---
+
+## 2026-10-07 — Session 3 (continued) — Open items after M9
+
+**Status at end:** unchanged: M0–M9 `DONE`, definition of done 6 of 8. The owner said
+not to wait on them for required work that cannot damage the project.
+
+**Done**
+- **Backup for the dev stack reset (ADR-021).** `pg_dumpall` of `postgres-orchestrator`,
+  `postgres-ledger` and `postgres-banks` (about 300 MB), stored outside the repo in
+  `D:\WORK\DEV\PROJECTS\PaymentSwitch_DEL_backups\2026-10-07-pre-reset\`. It was
+  restored into a throwaway `postgres:16` and every check matched live: transfers 97,576,
+  events 583,286, journals 195,531, entries 391,062 / 5,590,912,458 paise, and both banks'
+  account counts and balance sums. Restore steps are in `RESTORE.md` next to the dumps.
+
+**Not done, and why**
+- **The reset itself.** `npm run stack:down` (deletes the volumes) was denied by the
+  auto-mode classifier as irreversible local destruction. It was not retried by any other
+  route. The owner runs `npm run stack:down && npm run stack:up && npm run seed`, then
+  `npm run invariants` unscoped should pass.
+- **The GitHub remote.** `gh` is not installed, and Windows Credential Manager holds two
+  different GitHub identities. Creating the repo needs the owner's login, and Claude must
+  not pick an identity or extract a stored token.
+
+**Gotchas**
+- PostgreSQL 16's `pg_dumpall` now writes `\restrict` / `\unrestrict` lines with a random
+  key, which is why each dump ends in a random-looking token before the completion
+  comment. That is expected, not corruption.

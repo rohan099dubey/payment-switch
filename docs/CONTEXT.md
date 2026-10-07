@@ -168,9 +168,13 @@ Two, both the owner's to decide (not design questions):
 - **Development stack reset** (`npm run stack:down && npm run stack:up`) to clear the M3
   mutation artifacts (ADR-021). Until then, use `npm run invariants -- --since <ISO>` on
   this stack. A clean-room project in M9 showed the unscoped check passing on fresh
-  databases.
+  databases. **The reset is prepared:** a verified `pg_dumpall` backup of all three
+  Postgres containers is in `D:\WORK\DEV\PROJECTS\PaymentSwitch_DEL_backups6-10-07-pre-reset\`
+  (restore steps in its `RESTORE.md`). Running `stack:down` (it deletes the volumes) is
+  blocked for Claude by the auto-mode classifier, so the owner runs it.
 - **A GitHub remote**, so CI can run and the last open "tests pass in CI" box can be
-  checked.
+  checked. The owner has to sign in: `gh` is not installed, and Windows Credential
+  Manager holds two different GitHub identities.
 
 Both design questions from M0–M2 were resolved in M3 (`ADR-010`, `ADR-017`). Two facts
 from that resolution shape every later milestone:
