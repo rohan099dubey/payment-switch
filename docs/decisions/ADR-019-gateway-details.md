@@ -41,3 +41,18 @@ the switch, `npm audit` reports 0 vulnerabilities. No API used here changed betw
 - `docs/CONTEXT.md` lists §1 under "Active deviations" next to ADR-009.
 - Unit tests (`services/gateway/test`, using `app.inject` with fakes) pin every row above.
   The integration tests (`happyPath`, `validation`, `gateway`) check them against the stack.
+
+## Amendment (2026-10-07): Redis command timeout 250 ms → 1,000 ms
+
+The first CI run of P2-1 (GitHub Actions, run 37595870817) failed the burst test: 450
+concurrent requests from one client, and 68 of them failed open with `Command timed out`
+over 1.3 s while Redis was healthy. The Gateway's event loop, busy with the burst, read
+Redis's replies after ioredis's 250 ms timer had already fired. Treating that as an outage
+let about 15% of the burst through the limiter, exactly when it should throttle.
+
+The command timeout is now 1,000 ms. This does not change outage behaviour: with
+`enableOfflineQueue: false` a disconnected Redis fails immediately, so the timeout only
+bounds a Redis that is connected but not answering, a rare case where one second of
+extra latency is acceptable. The burst test now also requires that
+`rate_limit_fail_open_total` does not move while Redis is healthy.
+

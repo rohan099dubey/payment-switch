@@ -68,6 +68,7 @@ describe('rate limiting through the Gateway', () => {
     const client = GatewayClient.for(DEV_CLIENTS.rateLimit);
     await client.accessToken();
     const before = await metric('rate_limit_rejections_total');
+    const failOpenBefore = await metric('rate_limit_fail_open_total');
 
     const started = Date.now();
     const results = await Promise.all(Array.from({ length: 450 }, () => client.getTransfer(randomUUID())));
@@ -86,6 +87,9 @@ describe('rate limiting through the Gateway', () => {
     }
     for (const r of passed) expect(r.headers.get('x-ratelimit-remaining')).toMatch(/^\d+$/);
     expect(await metric('rate_limit_rejections_total')).toBe(before + limited.length);
+    // Redis is healthy, so a burst must never be let through by the fail-open path
+    // (ADR-019 amendment: a too-short command timeout once did exactly that on CI).
+    expect(await metric('rate_limit_fail_open_total')).toBe(failOpenBefore);
   });
 
   it('buckets are per client: another client is unaffected', async () => {

@@ -1202,3 +1202,10 @@ smoke: transfer -> outbox row published 313 ms later; created_at equal to the te
 
 **Open questions**
 - None.
+- **First PR CI of P2-1: `integration` failed one Gateway test** (191/192). The CI
+  Compose logs showed 68 `Command timed out` fail-opens during the 450-request burst,
+  with Redis healthy. The 250 ms ioredis timeout (ADR-019) mistook event-loop lag for an
+  outage and let about 15% of the burst past the limiter. The fix is 1,000 ms; a dead
+  Redis still fails open at once (no offline queue). The test now also requires
+  `rate_limit_fail_open_total` to stay unchanged during the burst. A 1 ms mutant fails
+  it (355 passed against a limit of 303). ADR-019 amendment.

@@ -10,7 +10,13 @@ import { RedisTokenBucket } from './plugins/rateLimit';
 /** In-flight requests may need the full CreateTransfer deadline to finish. */
 const SHUTDOWN_GRACE_MS = 12_000;
 /** A Redis that does not answer within this is treated as down (fail open, ADR-006). */
-const REDIS_COMMAND_TIMEOUT_MS = 250;
+/**
+ * How long one rate-limit command may wait for Redis (ADR-019, amended 2026-10-07). A dead
+ * Redis fails at once (no offline queue), so this only bounds a connected but silent one.
+ * It was 250 ms, which mistook event-loop lag during a 450-request burst for an outage:
+ * on the GitHub runner 68 requests failed open and slipped past the limit.
+ */
+const REDIS_COMMAND_TIMEOUT_MS = 1000;
 
 /** Wiring and startup only (spec section 3 conventions). */
 async function main(): Promise<void> {
