@@ -20,6 +20,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M7 | Chaos & invariants | `DONE` | 16 | 2026-10-06 | see `git log --grep "M7"` |
 | M8 | Load & metrics | `DONE` | 16, 17 | 2026-10-06 | see `git log --grep "M8"` |
 | M9 | Polish | `DONE` | 17, 20 | 2026-10-07 | see `git log --grep "M9"` |
+| P2-1 | Transactional outbox & Kafka (phase 2, §19 item 1) | `IN_PROGRESS` | 6, 19 (+ ADR-025) | — | — |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -321,3 +322,31 @@ complete.**
 - [x] k6 results recorded in `docs/benchmarks.md`, invariants held during the load run (three measured rows from M8, each with its invariant check; not re-run since. ADR-024 adds a call only on a bank refusal, and the load runs had none: every transfer ended `SUCCESS`)
 - [x] README complete, diagrams rendered, all eight ADRs written
 - [x] Every milestone has its five "What I built and why" lines (M0–M9, counted), *and the owner can explain each one without notes* (the owner confirmed in chat, 2026-10-07)
+
+## P2-1 — Transactional outbox & Kafka (phase 2, §19 item 1)
+
+**Scope:** `0002_outbox.sql`; terminal transitions insert their event in the same
+transaction; a relay (`FOR UPDATE SKIP LOCKED`, `LIMIT 100`) publishes to
+`transfer-events` keyed by transfer id (kafkajs, idempotent, `acks=all`) and sets
+`published_at`; at-least-once; single-node KRaft Kafka in Compose. Interpretations: `ADR-025`.
+
+Implementation
+- [x] `migrations/0002_outbox.sql`: the spec's columns, plus `NOT NULL`, a `CHECK` on the event types, `UNIQUE (aggregate_id)`, and a partial index on unpublished rows
+- [x] `domain/outboxEvents.ts`: event type per terminal state (all four), payload with money as a string, the Kafka message
+- [x] `repo/outboxRepo.ts`: `appendOutbox` (inside the CAS transaction), `publishBatch` (the spec query, send, mark, one transaction), `countUnpublished`
+- [x] `casTransition` writes the event for terminal transitions in its own transaction
+- [x] `outbox/relay.ts`: loop in every instance, drains full batches, exponential backoff up to 30 s, graceful stop after recovery
+- [x] `clients/kafkaPublisher.ts`: kafkajs 2.2.4, idempotent, `maxInFlightRequests: 1`, `acks: -1`, `DefaultPartitioner`, topic created at startup (3 partitions)
+- [x] Compose: `apache/kafka:3.9.1` KRaft, internal and host listeners, a named volume, a healthcheck; Orchestrator env `KAFKA_BROKERS`, `OUTBOX_POLL_MS`; `.env.example`
+- [x] Metrics `outbox_published_total`, `outbox_publish_failures_total`, `outbox_unpublished`
+- [x] Invariant **I8** in `tests/helpers/invariants.ts`, in both chaos tests (`evaluate`) and in `npm run invariants`
+- [x] Architecture diagram re-rendered with Kafka and the relay
+
+Acceptance
+- [x] Unit: event mapping, payload and message; the relay against fakes (order, batch limit, a failed send rolls back, at-least-once republish with the same event id, drain, backoff, stop); config; I8 checks
+- [x] Integration (`tests/integration/outbox.test.ts`, 8 tests): the schema as specified, with the database rejecting a second event and an unknown type; SUCCESS, FAILED and REVERSED each write exactly one event **in the same transaction** (identical `now()`); a non-terminal transfer has none until it finishes; every event is in Kafka with its key, headers and payload, and is marked published; **with Kafka stopped**, payments succeed, events wait, two concurrent claims never overlap (`SKIP LOCKED`), a failed send rolls back, and everything is published after Kafka returns
+- [x] A dual-write mutant (the event in a separate transaction after the commit), run in a throwaway Compose project, fails the 3 same-transaction tests
+- [x] Metrics test pins the three new metrics; the full integration suite passes (192/192)
+- [x] The 10,000-transfer test passes twice with different seeds, with **I8** holding for every transfer (seed 1: 9,469 / 518 / 13; seed 2: 9,396 / 524 / 80; I1–I8 hold, 0 manual review; the crash recovery test passes in both runs with I8. An earlier pair of runs failed on a Docker Desktop connection reset in the harness, not in the system: see the ADR-021 amendment)
+- [x] `npm run invariants` (I1–I6, I8) green after the runs (`--since 2026-10-07T08:36:46Z`: 20,400 transfers, all hold)
+- [ ] CI green on GitHub (`static`, `integration`, `nightly`)

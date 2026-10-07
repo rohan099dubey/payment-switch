@@ -10,12 +10,17 @@
  *   journals that carry those transfer ids must add up.
  *
  * I5 always uses `Bank.GetOperation` and `Ledger.ListJournals`, as section 16 prescribes.
+ *
+ * I8 (phase 2, ADR-025) covers the transactional outbox: every transfer that reached its
+ * terminal state after `0002_outbox.sql` was applied has exactly one outbox event of the
+ * matching type, naming the same transfer, state and amount; once the stack is quiet,
+ * none is unpublished.
  */
-import type { Pool } from 'pg';
+import type { Pool, QueryResult, QueryResultRow } from 'pg';
 import type { BankAdmin, BankId } from './bankAdmin';
 import type { JournalView, LedgerReader } from './ledgerClient';
 
-export type InvariantId = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'I6' | 'I7';
+export type InvariantId = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'I6' | 'I7' | 'I8';
 
 export interface InvariantResult {
   id: InvariantId;
@@ -68,6 +73,41 @@ export interface Evidence {
 }
 
 const MAX_PROBLEMS = 20;
+
+/** Errors where the connection itself failed and no query result exists. */
+const CONNECTION_ERRORS = new Set(['ECONNRESET', 'ECONNREFUSED', 'EPIPE']);
+
+function isConnectionError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  const message = err instanceof Error ? err.message : '';
+  return (typeof code === 'string' && CONNECTION_ERRORS.has(code)) || message.includes('Connection terminated');
+}
+
+/**
+ * A read-only verification query. On Docker Desktop for Windows the host port forwarder
+ * occasionally resets a fresh connection at the end of a long chaos run, before it reaches
+ * Postgres (the database logs nothing; ADR-021, 2026-10-07 amendment). Only such
+ * connection-level failures are retried, at most twice, and each retry is logged. A SQL
+ * error or any wrong result fails at once. The data checked is the same, so no
+ * invariant is loosened.
+ */
+export async function readQuery<R extends QueryResultRow>(
+  pool: Pool,
+  text: string,
+  values: unknown[] = [],
+): Promise<QueryResult<R>> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await pool.query<R>(text, values);
+    } catch (err) {
+      if (!isConnectionError(err) || attempt >= 3) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`verification read: connection reset (${message}); retry ${attempt} of 2\n`);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+}
 const TERMINAL = new Set(['SUCCESS', 'FAILED', 'REVERSED', 'NEEDS_MANUAL_REVIEW']);
 const BANKS: readonly BankId[] = ['bank_a', 'bank_b'];
 
@@ -115,7 +155,7 @@ export async function loadTransfers(
   orchDb: Pool,
   filter: { keyPrefix?: string; since?: Date },
 ): Promise<RunTransfer[]> {
-  const res = await orchDb.query<{
+  const res = await readQuery<{
     id: string;
     idempotency_key: string;
     state: string;
@@ -124,6 +164,7 @@ export async function loadTransfers(
     payee_bank_id: BankId;
     amount: string;
   }>(
+    orchDb,
     `SELECT id, idempotency_key, state, failure_code, payer_bank_id, payee_bank_id, amount
        FROM transfers
       WHERE ($1::text IS NULL OR idempotency_key LIKE $1 || '%')
@@ -160,7 +201,8 @@ export async function collectEvidence(deps: InvariantDeps, transfers: RunTransfe
 /** I1: every journal balances and the ledger as a whole is zero-sum. */
 export async function checkI1(deps: InvariantDeps): Promise<InvariantResult> {
   const trial = await deps.ledger.getTrialBalance();
-  const unbalanced = await deps.ledgerDb.query<{ journal_id: string; d: string; c: string }>(
+  const unbalanced = await readQuery<{ journal_id: string; d: string; c: string }>(
+    deps.ledgerDb,
     `SELECT journal_id, sum(amount) FILTER (WHERE direction = 'D')::text AS d,
             sum(amount) FILTER (WHERE direction = 'C')::text AS c
        FROM entries GROUP BY journal_id
@@ -288,6 +330,131 @@ export function checkI6(transfers: RunTransfer[]): InvariantResult {
     .filter((t) => !TERMINAL.has(t.state) || t.state === 'NEEDS_MANUAL_REVIEW')
     .map((t) => `${t.id}: ${t.state}${t.failureCode === null ? '' : ` / ${t.failureCode}`}`);
   return result('I6', `${transfers.length} transfers, ${problems.length} unfinished or under review`, problems);
+}
+
+/** Each transfer's outbox facts, read from `orchestrator_db` (I8). */
+export interface OutboxFacts {
+  transferId: string;
+  state: string;
+  amount: bigint;
+  /** When the transfer entered its terminal state; null if it is not terminal. */
+  terminalAt: Date | null;
+  events: { eventType: string; payload: Record<string, unknown>; publishedAt: Date | null }[];
+}
+
+const EVENT_TYPE: Record<string, string> = {
+  SUCCESS: 'transfer.succeeded',
+  FAILED: 'transfer.failed',
+  REVERSED: 'transfer.reversed',
+  NEEDS_MANUAL_REVIEW: 'transfer.needs_manual_review',
+};
+
+/** When `0002_outbox.sql` was applied: transfers that finished earlier never had an event. */
+export async function outboxCutoff(orchDb: Pool): Promise<Date | null> {
+  const r = await readQuery<{ applied_at: Date }>(
+    orchDb,
+    "SELECT applied_at FROM schema_migrations WHERE filename = '0002_outbox.sql'",
+  );
+  return r.rows[0]?.applied_at ?? null;
+}
+
+export async function loadOutboxFacts(orchDb: Pool, transferIds: readonly string[]): Promise<OutboxFacts[]> {
+  const ids = [...transferIds];
+  const transfers = await readQuery<{ id: string; state: string; amount: string; terminal_at: Date | null }>(
+    orchDb,
+    `SELECT t.id, t.state, t.amount::text AS amount,
+            (SELECT min(e.created_at) FROM transfer_events e
+              WHERE e.transfer_id = t.id
+                AND e.to_state IN ('SUCCESS','FAILED','REVERSED','NEEDS_MANUAL_REVIEW')) AS terminal_at
+       FROM transfers t WHERE t.id = ANY($1::uuid[])`,
+    [ids],
+  );
+  const events = await readQuery<{
+    aggregate_id: string;
+    event_type: string;
+    payload: Record<string, unknown>;
+    published_at: Date | null;
+  }>(
+    orchDb,
+    'SELECT aggregate_id, event_type, payload, published_at FROM outbox WHERE aggregate_id = ANY($1::uuid[])',
+    [ids],
+  );
+  const byTransfer = new Map<string, OutboxFacts['events']>();
+  for (const e of events.rows) {
+    const list = byTransfer.get(e.aggregate_id) ?? [];
+    list.push({ eventType: e.event_type, payload: e.payload, publishedAt: e.published_at });
+    byTransfer.set(e.aggregate_id, list);
+  }
+  return transfers.rows.map((t) => ({
+    transferId: t.id,
+    state: t.state,
+    amount: BigInt(t.amount),
+    terminalAt: t.terminal_at,
+    events: byTransfer.get(t.id) ?? [],
+  }));
+}
+
+/**
+ * I8. `cutoff` is when the outbox was created (`outboxCutoff`); a transfer that finished
+ * before it must have no event. `requirePublished`: the stack is quiet, so every event
+ * must have reached Kafka.
+ */
+export function checkI8(facts: OutboxFacts[], cutoff: Date | null, requirePublished: boolean): InvariantResult {
+  const problems: string[] = [];
+  let expected = 0;
+  let unpublished = 0;
+  for (const f of facts) {
+    const mustHave = f.terminalAt !== null && cutoff !== null && f.terminalAt >= cutoff;
+    if (!mustHave) {
+      if (f.events.length > 0)
+        problems.push(`${f.transferId} (${f.state}): ${f.events.length} event(s), expected none`);
+      continue;
+    }
+    expected++;
+    const [event, ...extra] = f.events;
+    if (event === undefined || extra.length > 0) {
+      problems.push(`${f.transferId} (${f.state}): ${f.events.length} outbox events, expected exactly 1`);
+      continue;
+    }
+    if (event.eventType !== EVENT_TYPE[f.state]) {
+      problems.push(`${f.transferId} (${f.state}): event ${event.eventType}, expected ${EVENT_TYPE[f.state] ?? '?'}`);
+    }
+    const p = event.payload;
+    if (p.transfer_id !== f.transferId || p.state !== f.state || p.amount !== f.amount.toString()) {
+      problems.push(
+        `${f.transferId}: payload names ${String(p.transfer_id)} / ${String(p.state)} / ${String(p.amount)}`,
+      );
+    }
+    if (event.publishedAt === null) {
+      unpublished++;
+      if (requirePublished) problems.push(`${f.transferId}: event not published`);
+    }
+  }
+  return result(
+    'I8',
+    `${expected} terminal transfers with one outbox event each, ${unpublished} unpublished`,
+    problems,
+  );
+}
+
+/** Waits until every outbox event of these transfers is published (the relay drains). */
+export async function awaitOutboxPublished(
+  orchDb: Pool,
+  transferIds: readonly string[],
+  timeoutMs: number,
+): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const r = await readQuery<{ n: number }>(
+      orchDb,
+      'SELECT count(*)::int AS n FROM outbox WHERE aggregate_id = ANY($1::uuid[]) AND published_at IS NULL',
+      [[...transferIds]],
+    );
+    if (r.rows[0]?.n === 0) return;
+    if (Date.now() >= until)
+      throw new Error(`${r.rows[0]?.n ?? '?'} outbox events still unpublished after ${timeoutMs} ms`);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 }
 
 export interface DuplicateSample {

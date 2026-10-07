@@ -37,6 +37,15 @@ export function parseBankEndpoints(value: string, ctx: z.RefinementCtx): Readonl
   return endpoints;
 }
 
+/** Parses `KAFKA_BROKERS` (`kafka:9092` or `a:9092,b:9092`) into a list of host:port. */
+export function parseBrokers(value: string, ctx: z.RefinementCtx): string[] {
+  const brokers = value.split(',').map((part) => part.trim());
+  for (const broker of brokers) {
+    if (!ADDRESS.test(broker)) ctx.addIssue({ code: 'custom', message: `broker "${broker}" must be host:port` });
+  }
+  return brokers;
+}
+
 /**
  * Spec section 15, Orchestrator block. `ORCHESTRATOR_TIMEOUT_MS` is the Gateway's
  * deadline; it is read here only to enforce section 14's startup constraint
@@ -66,6 +75,9 @@ export const orchestratorConfigSchema = z
     RECOVERY_CONCURRENCY: positiveInt(5),
     RESOLVE_AFTER_ATTEMPTS: positiveInt(3),
     MAX_RECOVERY_ATTEMPTS: positiveInt(20),
+    // Phase 2, item 1 (section 19, ADR-025): the outbox relay.
+    KAFKA_BROKERS: z.string().min(1).default('kafka:9092').transform(parseBrokers),
+    OUTBOX_POLL_MS: positiveInt(500),
     // Empty (as in .env.example) means "use the container hostname".
     INSTANCE_ID: z
       .string()

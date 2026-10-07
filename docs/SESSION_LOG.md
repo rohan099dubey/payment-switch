@@ -1136,3 +1136,69 @@ GitHub, c5a82c1 (the fix):
 
 **Open questions**
 - None about the design.
+
+---
+
+## 2026-10-07 — Session 3 (continued) — P2-1 Transactional outbox & Kafka
+
+**Status at end:** all P2-1 boxes but the CI one ticked. Phase 1 was closed first: the
+owner confirmed the last DoD box, so the definition of done is 8/8. Branch
+`claude/p2-1-outbox-kafka`.
+
+**Done**
+- `0002_outbox.sql`, `domain/outboxEvents.ts`, `repo/outboxRepo.ts`, `outbox/relay.ts`,
+  `clients/kafkaPublisher.ts`, wiring in `main.ts` (the relay stops after recovery on
+  SIGTERM), config `KAFKA_BROKERS` / `OUTBOX_POLL_MS`, three metrics, Kafka in Compose.
+  `casTransition` inserts the event for a terminal transition in its own transaction.
+- Invariant **I8** in the shared helpers: both chaos tests (`evaluate` waits for the
+  outbox to drain) and `npm run invariants`. The cutoff is `schema_migrations.applied_at`
+  of `0002_outbox.sql`: the history is not backfilled.
+- Tests: 25 new unit tests (event mapping, relay against fakes, config, I8, `readQuery`);
+  `tests/integration/outbox.test.ts` (8, including a Kafka outage); the metrics test
+  pins the three new metrics. ADR-025 records the interpretations.
+
+**Results (measured)**
+```text
+lint / typecheck / buf lint clean; unit 630/630; integration 192/192 (11 files)
+outbox.test against a dual-write mutant (throwaway project ps-mutant-outbox): 3 failed / 5 passed, as intended
+TRANSFER_COUNT=10000 test:chaos, seed 1: 9,469 / 518 / 13, I1-I8, crash 200/200 with I8 (0 read retries)
+TRANSFER_COUNT=10000 test:chaos, seed 2: 9,396 / 524 / 80, I1-I8, crash 200/200 with I8 (0 read retries)
+npm run invariants -- --since 2026-10-07T08:36:46Z -> 20,400 transfers, I1-I6 and I8 hold
+smoke: transfer -> outbox row published 313 ms later; created_at equal to the terminal event's
+```
+
+**Decisions** (ADR-025)
+- Every terminal state emits an event, including `NEEDS_MANUAL_REVIEW` (stricter than the
+  spec's three examples). The database enforces one event per transfer.
+- `apache/kafka:3.9.1`, not 4.x: kafkajs 2.2.4 (the last release, 2023) predates the
+  protocol versions 4.0 removed.
+- Kafka is not a dependency of the Orchestrator (no `depends_on`, readiness ignores it).
+  The outage test proves that payments continue.
+- The relay holds its `FOR UPDATE` transaction across the send, as the spec's query
+  requires. It is bounded by the producer timeouts, and only outbox rows are locked.
+
+**Gotchas**
+- **Two 10,000-transfer runs failed with `read ECONNRESET` in the test harness** (the
+  first ledger-database connection, at the very end). Diagnosed rather than retried
+  blindly: Postgres logged nothing (the connection never reached it), `TIME_WAIT` stayed
+  under 61 (not port exhaustion), the database never restarted, and the checker on a
+  fresh connection held over 20,455 transfers. This is Docker Desktop's port forwarder
+  on Windows. The fix is `readQuery`: read-only verification queries retry only
+  connection-level errors, at most twice, and log each retry (ADR-021 amendment). The
+  next two runs logged 0 retries. CI on Linux has no Docker Desktop.
+- kafkajs warns "Limiting retries for the idempotent producer may invalidate EoS". That
+  is expected here: a failed send drops the producer and the outbox retries the batch
+  (ADR-025). Set `DefaultPartitioner` explicitly, or kafkajs warns about the v2 default.
+- The Orchestrator starts before Kafka, so its first `InitProducerId` can hit "the
+  coordinator is loading". The relay retries; harmless.
+- Adding a second `child({ component })` in pino duplicates the key in the JSON line.
+  Use a different field name (`subsystem`).
+- The dual-write mutant ran in a throwaway Compose project, following the red-test rule
+  from earlier today.
+
+**Next action**
+- Push, then watch `static` + `integration` and a manual `nightly` on GitHub. Tick the CI
+  box, merge P2-1 to `main`, then P2-2 (the notification service, §19 item 2).
+
+**Open questions**
+- None.

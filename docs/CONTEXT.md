@@ -16,11 +16,11 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **None. Phase 1 milestones M0–M9 are all `DONE`.** |
+| **Active milestone** | **P2-1 — Transactional outbox and Kafka** (phase 2, §19 item 1), branch `claude/p2-1-outbox-kafka`. Phase 1 (M0–M9) is `DONE` |
 | **Definition of done** | **8 of 8 — phase 1 complete** (2026-10-07; the last box confirmed by the owner) |
 | **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. All three jobs green on `c5a82c1`. The first `nightly` found a real bug, fixed in ADR-024 |
-| **Next action** | The owner confirms the last DoD box. Optional: reset the dev stack again to clear the two red-test transfers (ADR-021 amendment) |
-| **Read first for phase 2** | `ARCHITECTURE.md` section 19 (Phase 2 extensions), and only once the definition of done is complete |
+| **Next action** | See `docs/PROGRESS.md`, section P2-1. Then P2-2, the notification service (§19 item 2): it consumes `transfer-events` and deduplicates by `event_id` |
+| **Read first for phase 2** | `ARCHITECTURE.md` section 19 (each item is independent), plus `ADR-025` for how events look on the wire |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
 believe `PROGRESS.md` and correct this one.
@@ -43,10 +43,14 @@ speaks HTTP to the outside; everything internal is gRPC.
 | Service | Ports | Owns | Calls |
 |---|---|---|---|
 | Gateway | HTTP 8080 | nothing durable (Redis = rate-limit buckets only) | Orchestrator |
-| Orchestrator | gRPC 50051, HTTP 9101 | `orchestrator_db`: `transfers`, `transfer_events` | both banks, Ledger |
+| Orchestrator | gRPC 50051, HTTP 9101 | `orchestrator_db`: `transfers`, `transfer_events`, `outbox` | both banks, Ledger; publishes to Kafka (outbox relay) |
 | Ledger | gRPC 50052, HTTP 9102 | `ledger_db`: `accounts`, `journals`, `entries` | nothing (leaf) |
 | Mock Bank A | gRPC 50061, HTTP 9111 | db `bank_a` | nothing |
 | Mock Bank B | gRPC 50062, HTTP 9112 | db `bank_b` | nothing |
+
+Kafka (`apache/kafka:3.9.1`, KRaft, single node; `kafka:9092` inside Compose, `localhost:9094`
+from the host) carries topic `transfer-events` (phase 2, ADR-025). It is **not** on the
+payment path: nothing depends on it, and events wait in the outbox while it is down.
 
 Orchestrator and Ledger each get a dedicated Postgres container. The two banks share
 one container (`postgres-banks`, two databases) because they stand in for *external*
@@ -135,6 +139,7 @@ Computed against a baseline snapshot taken before each run.
 | **I5** | Exactly-once effects per transfer, verified per final state |
 | **I6** | Everything finished — no non-terminal transfer, **zero** in `NEEDS_MANUAL_REVIEW` |
 | **I7** | Replays are idempotent — same transfer id, same final state |
+| **I8** | Outbox (phase 2): every terminal transfer since `0002_outbox.sql` has exactly one event of the matching type; none unpublished once quiet (ADR-025) |
 
 ## Active deviations from ARCHITECTURE.md
 
@@ -157,6 +162,7 @@ Computed against a baseline snapshot taken before each run.
 | Orchestrator: CAS also matches `state`; unrecognised bank errors are `BANK_INVARIANT_VIOLATION`; `INVALID_REQUEST`/`TRANSFER_NOT_FOUND` codes; extra startup checks | `ADR-018` |
 | CI `nightly` runs the 10,000-transfer test **twice** (seeds 1, 2) plus an unscoped `npm run invariants`; jobs gated by event; diagrams rendered by `npx` mermaid-cli, not a dependency | `ADR-023` |
 | **A definite bank failure is fenced with `Resolve` before the failure branch** (the spec fails at once; a late earlier attempt could then still apply, which the first nightly CI run caught) | `ADR-024` |
+| Outbox: an event for **every** terminal state (incl. `NEEDS_MANUAL_REVIEW`), `UNIQUE (aggregate_id)`, amount as a string, **Kafka 3.9.1** (kafkajs predates 4.x), no `depends_on` Kafka, relay metrics, invariant I8 | `ADR-025` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
 

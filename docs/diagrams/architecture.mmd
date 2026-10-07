@@ -1,5 +1,6 @@
 %% System architecture: 4 services, 4 data stores.
-%% Source: ARCHITECTURE.md section 4.
+%% Source: ARCHITECTURE.md section 4, plus phase 2 item 1 (section 19, ADR-025): the
+%% transactional outbox and Kafka.
 flowchart TB
     client([Client])
 
@@ -8,7 +9,7 @@ flowchart TB
     end
 
     subgraph core["Payment switch"]
-        orch["<b>Orchestrator</b><br/>gRPC 50051 · HTTP 9101<br/>saga · recovery worker"]
+        orch["<b>Orchestrator</b><br/>gRPC 50051 · HTTP 9101<br/>saga · recovery worker · outbox relay"]
         ldg["<b>Ledger</b><br/>gRPC 50052 · HTTP 9102<br/>double-entry, append-only"]
     end
 
@@ -18,7 +19,8 @@ flowchart TB
     end
 
     redis[("Redis 7<br/>rate-limit buckets<br/><i>no money, no state</i>")]
-    pgo[("postgres-orchestrator<br/>orchestrator_db<br/>transfers · transfer_events")]
+    pgo[("postgres-orchestrator<br/>orchestrator_db<br/>transfers · transfer_events · outbox")]
+    kafka[("Kafka 3.9 (KRaft)<br/>topic transfer-events<br/><i>events only, never on the payment path</i>")]
     pgl[("postgres-ledger<br/>ledger_db<br/>accounts · journals · entries")]
     pgb[("postgres-banks<br/>bank_a · bank_b<br/>accounts · operations")]
 
@@ -31,6 +33,7 @@ flowchart TB
     orch -->|"gRPC PostJournal<br/>deadline 2s"| ldg
 
     orch --- pgo
+    orch -.->|"outbox relay<br/>idempotent producer, acks=all"| kafka
     ldg --- pgl
     bka --- pgb
     bkb --- pgb
@@ -38,4 +41,4 @@ flowchart TB
     classDef svc fill:#1e3a5f,stroke:#4a90d9,stroke-width:2px,color:#fff
     classDef store fill:#2d2d2d,stroke:#888,stroke-width:1px,color:#eee
     class gw,orch,ldg,bka,bkb svc
-    class redis,pgo,pgl,pgb store
+    class redis,pgo,pgl,pgb,kafka store

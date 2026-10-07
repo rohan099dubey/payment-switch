@@ -19,6 +19,12 @@ Four services, no shared databases, gRPC between them, HTTP only at the edge:
 | Ledger | gRPC 50052, HTTP 9102 | `ledger_db`: `accounts`, `journals`, `entries` | nothing |
 | Mock Bank A / B | gRPC 50061 / 50062, HTTP 9111 / 9112 | `bank_a` / `bank_b` | nothing |
 
+Every finished transfer also emits an event to Kafka topic `transfer-events` through a
+**transactional outbox**: the event row is written in the same database transaction as the
+final state change, and a relay publishes it (at-least-once, deduplicate by `event_id`).
+Kafka is never on the payment path: if it is down, payments go on and events wait
+([ADR-025](docs/decisions/ADR-025-outbox-and-kafka.md)).
+
 Each transfer is a persisted state machine driven by the Orchestrator. It has ten states,
 four of them terminal, and **a timeout never changes the state**:
 
@@ -152,11 +158,12 @@ Seven invariants are checked against a baseline snapshot taken before each run:
 | **I5** | Exactly-once effects, checked transfer by transfer against what its final state allows |
 | **I6** | Everything finished: no non-terminal transfer and **zero** in `NEEDS_MANUAL_REVIEW` |
 | **I7** | Replays are idempotent: same transfer id, same final state |
+| **I8** | Every finished transfer has exactly one outbox event of the matching type, and none stays unpublished (phase 2, [ADR-025](docs/decisions/ADR-025-outbox-and-kafka.md)) |
 
 ```bash
 npm run test:chaos                          # crash recovery + the 10,000-transfer invariant test
 TRANSFER_COUNT=1000 npm run test:chaos      # the CI size
-npm run invariants                          # I1-I6 against the live stack, every transfer
+npm run invariants                          # I1-I6 and I8 against the live stack, every transfer
 npm run invariants -- --since 2026-10-07T00:00:00Z   # only transfers created since then
 ```
 
@@ -286,6 +293,7 @@ Where the implementation fills a gap in the specification or deviates from it:
 | [022](docs/decisions/ADR-022-load-test-details.md) | Load test and seed details |
 | [023](docs/decisions/ADR-023-m9-polish-details.md) | CI job layout, diagram rendering, readiness probes in `repo/` |
 | [024](docs/decisions/ADR-024-fence-definite-failures.md) | A definite bank refusal is fenced with `Resolve` before the failure branch (found by the first nightly CI run) |
+| [025](docs/decisions/ADR-025-outbox-and-kafka.md) | Transactional outbox and Kafka (phase 2): an event for every terminal state, money as a string, Kafka 3.9 for kafkajs, no Kafka on the payment path |
 
 ## 8. What I built and why
 
@@ -360,3 +368,10 @@ Five lines after each milestone, each one explainable out loud without notes.
 3. The five diagrams are rendered from Mermaid source kept in the repo. Rendering them caught a real defect: `#` starts a comment in a Mermaid name, which silently merged the two Orchestrator instances in the crash-recovery diagram.
 4. The readiness checks' `SELECT 1` moved into each service's `repo/` layer, so "SQL lives only in `repo/`" now has no exceptions, and a search of the source confirms it.
 5. The first nightly CI run found a real exactly-once bug the spec itself allowed: a debit that timed out applied *after* a retry was refused for insufficient funds and the transfer had failed. Now every refusal is fenced with the bank's `Resolve` before the switch acts on it (ADR-024), proven red then green by tests that replay the late request.
+
+**P2-1 — Transactional outbox & Kafka** (phase 2)
+1. Every finished transfer now emits an event to Kafka through a transactional outbox: the event row is written in the same Postgres transaction as the final state change, so a crash can never commit one without the other.
+2. A relay in every Orchestrator instance claims unpublished rows with `FOR UPDATE SKIP LOCKED`, so instances share the work without double claims. Delivery is at-least-once, and every message carries a stable event id for consumers to deduplicate by.
+3. Kafka is deliberately kept off the payment path. A test stops Kafka and sends payments that all succeed; their events wait in the outbox and arrive once Kafka is back.
+4. "Same transaction" is proven, not assumed: Postgres fixes `now()` per transaction, so the event and the state change carry identical timestamps. A planted dual-write bug, run on a throwaway stack, fails exactly those tests.
+5. A new invariant, I8 (every finished transfer has exactly one matching event, and all are published), held across two 10,000-transfer chaos runs with Orchestrator kills. The database itself enforces one event per transfer.

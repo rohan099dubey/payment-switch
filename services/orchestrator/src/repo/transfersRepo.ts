@@ -6,6 +6,7 @@ import type { SagaStore } from '../domain/saga';
 import type { RecoveryStore } from '../recovery/worker';
 import type { CasRequest } from '../domain/transitions';
 import { appendEvent } from './eventsRepo';
+import { appendOutbox } from './outboxRepo';
 
 /** A pool or a client already inside a transaction. */
 export type Queryable = Pool | PoolClient;
@@ -129,7 +130,8 @@ export async function getTransferForClient(db: Queryable, id: string, clientId: 
  * The compare-and-set from spec section 13, in one transaction with its event. Stricter
  * than the section 13 statement in one way (ADR-018): it also matches `state`, as the
  * section 6 module table says, so a caller holding a stale in-memory state can never
- * write. A terminal state clears the lease. Zero rows: returns null and writes nothing.
+ * write. A terminal state clears the lease and inserts its outbox event (section 19,
+ * ADR-025). Zero rows: returns null and writes nothing.
  */
 export async function casTransition(pool: Pool, req: CasRequest): Promise<Transfer | null> {
   return withTransaction(pool, async (client) => {
@@ -163,7 +165,10 @@ export async function casTransition(pool: Pool, req: CasRequest): Promise<Transf
       reason: req.reason,
       detail: req.detail,
     });
-    return toTransfer(row);
+    const transfer = toTransfer(row);
+    // Section 19: a terminal transition writes its outbox event in this same transaction.
+    if (req.terminal) await appendOutbox(client, transfer);
+    return transfer;
   });
 }
 

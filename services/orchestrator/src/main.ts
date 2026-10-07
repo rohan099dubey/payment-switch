@@ -2,18 +2,27 @@ import path from 'node:path';
 import { createInstrument, createLogger, createPool, runMigrations, startHealthServer } from '@switch/common';
 import { Registry } from 'prom-client';
 import { BankClients, createBankPort } from './clients/bankClients';
+import { KafkaPublisher } from './clients/kafkaPublisher';
 import { createLedgerClient, createLedgerPort } from './clients/ledgerClient';
 import { loadOrchestratorConfig } from './config';
 import { policyFromConfig } from './domain/policy';
 import { createTransferHandlers } from './grpc/handlers';
 import { startGrpcServer } from './grpc/server';
 import { SagaEngine, type SagaDeps } from './domain/saga';
-import { createOrchestratorMetrics, recoveryObserver, sagaObserver } from './metrics';
+import { OUTBOX_BATCH, TRANSFER_EVENTS_TOPIC } from './domain/outboxEvents';
+import { createOrchestratorMetrics, recoveryObserver, relayObserver, sagaObserver } from './metrics';
+import { OutboxRelay } from './outbox/relay';
+import { createOutboxStore } from './repo/outboxRepo';
 import { RecoveryWorker } from './recovery/worker';
 import { createRecoveryStore, createTransferStore, ping } from './repo/transfersRepo';
 
 /** Section 6, Shutdown: wait up to 10 seconds for inline sagas. */
 const SHUTDOWN_GRACE_MS = 10_000;
+
+/** ADR-025: partitions of `transfer-events` when the relay creates it. */
+const KAFKA_PARTITIONS = 3;
+/** ADR-025: the relay's backoff ceiling while Kafka is unreachable. */
+const RELAY_MAX_BACKOFF_MS = 30_000;
 
 /** Wiring and startup only (spec section 3 conventions). */
 async function main(): Promise<void> {
@@ -79,8 +88,33 @@ async function main(): Promise<void> {
     observer: recoveryObserver(metrics),
   });
   recovery.start();
+
+  // Phase 2, item 1 (section 19, ADR-025). Kafka is not a dependency of the payment path:
+  // if it is down, events wait in the outbox and the relay backs off.
+  const relayLogger = logger.child({ component: 'outbox' });
+  const publisher = new KafkaPublisher({
+    brokers: config.KAFKA_BROKERS,
+    clientId: `orchestrator-${config.INSTANCE_ID}`,
+    topic: TRANSFER_EVENTS_TOPIC,
+    partitions: KAFKA_PARTITIONS,
+    logger: relayLogger,
+  });
+  const relay = new OutboxRelay({
+    store: createOutboxStore(pool),
+    publisher,
+    config: { pollMs: config.OUTBOX_POLL_MS, batch: OUTBOX_BATCH, maxBackoffMs: RELAY_MAX_BACKOFF_MS },
+    logger: relayLogger,
+    observer: relayObserver(metrics),
+  });
+  relay.start();
   logger.info(
-    { grpc_port: grpcServer.port, http_port: config.HTTP_PORT, banks: banks.bankIds, ledger: config.LEDGER_ADDR },
+    {
+      grpc_port: grpcServer.port,
+      http_port: config.HTTP_PORT,
+      banks: banks.bankIds,
+      ledger: config.LEDGER_ADDR,
+      kafka: config.KAFKA_BROKERS,
+    },
     'orchestrator started',
   );
 
@@ -95,6 +129,12 @@ async function main(): Promise<void> {
       await grpcServer.shutdown(SHUTDOWN_GRACE_MS);
       // Then stop the recovery loop, letting the batch in progress finish within the grace.
       await recovery.stop(SHUTDOWN_GRACE_MS);
+      // Recovery can still finish transfers, so the relay stops after it. Unpublished
+      // events stay in the outbox for any instance's relay.
+      await relay.stop(SHUTDOWN_GRACE_MS);
+      await publisher.close().catch((err: unknown) => {
+        logger.warn({ err }, 'kafka producer did not close cleanly');
+      });
       await health.close();
       banks.close();
       ledger.close();

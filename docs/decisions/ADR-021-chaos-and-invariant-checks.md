@@ -117,3 +117,16 @@ mutation runs use their own databases, never the shared ones.
   once the lease expires. They then fail cleanly (`PAYER_ACCOUNT_NOT_FOUND`). The checker
   is right to count in-flight transfers as violations, and it is not loosened. Neither CI
   job runs it straight after the integration suite.
+- **Verification reads retry a reset connection (P2-1).** After Kafka joined the stack, two
+  `npm run test:chaos` runs with 10,000 transfers failed at the very end with `read
+  ECONNRESET`: the test's *first* connection to `postgres-ledger` (`checkI1`, about 150 s
+  in). Postgres logged nothing, not even an incomplete startup packet, so the reset
+  happened in Docker Desktop's port forwarder on Windows before the database was reached.
+  The database never restarted. Windows `TIME_WAIT` peaked at 61 sockets, so it was not
+  port exhaustion. A 1,000-transfer run and a later 10,000 run passed, and the scoped
+  `npm run invariants` straight afterwards held on all 20,455 transfers. Every read-only
+  verification query in `tests/helpers/invariants.ts` now goes through `readQuery`. It
+  retries **only** connection-level errors (`ECONNRESET`, `ECONNREFUSED`, `EPIPE`,
+  "Connection terminated"), at most twice, logging each retry to stderr. A SQL error
+  or a wrong result fails at once, and the data checked is the same, so no invariant is
+  loosened. The next two full runs logged 0 retries.

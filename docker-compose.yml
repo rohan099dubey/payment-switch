@@ -67,6 +67,42 @@ services:
       timeout: 3s
       retries: 10
 
+  # Phase 2, item 1 (ARCHITECTURE.md section 19, ADR-025): single-node KRaft Kafka for the
+  # outbox relay. 3.9.1, not 4.x: kafkajs 2.2.4 predates the protocol versions 4.0 dropped.
+  # Two listeners, because Kafka hands clients its advertised address: kafka:9092 inside
+  # Compose, localhost:9094 for the host (tests, a native second Orchestrator).
+  # Nothing depends on it: payments keep working while it is down (events wait in the outbox).
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      CLUSTER_ID: X2PoAuAbyFHn4z9OX2F02g
+      KAFKA_NODE_ID: '1'
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: '1'
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: '1'
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: '1'
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: '0'
+      # Topics are created explicitly by the relay, so a misspelt topic fails loudly.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+    ports:
+      - '9094:9094'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        ['CMD-SHELL', '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1']
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      start_period: 10s
+
   ledger:
     build:
       context: .
@@ -170,6 +206,8 @@ services:
       RECOVERY_CONCURRENCY: '5'
       RESOLVE_AFTER_ATTEMPTS: '3'
       MAX_RECOVERY_ATTEMPTS: '20'
+      KAFKA_BROKERS: kafka:9092
+      OUTBOX_POLL_MS: '500'
     ports:
       - '50051:50051'
       - '9101:9101'
@@ -228,3 +266,4 @@ volumes:
   orchestrator-data:
   ledger-data:
   banks-data:
+  kafka-data:
