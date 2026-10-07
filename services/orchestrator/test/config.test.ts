@@ -33,6 +33,16 @@ describe('orchestrator config (section 15)', () => {
     ]);
   });
 
+  it('outbox relay settings (ADR-025): KAFKA_BROKERS is a host:port list, OUTBOX_POLL_MS defaults to 500', () => {
+    const c = loadOrchestratorConfig({});
+    expect(c.KAFKA_BROKERS).toEqual(['kafka:9092']);
+    expect(c.OUTBOX_POLL_MS).toBe(500);
+    expect(loadOrchestratorConfig({ KAFKA_BROKERS: 'a:9092, b:9093' }).KAFKA_BROKERS).toEqual(['a:9092', 'b:9093']);
+    expect(() => loadOrchestratorConfig({ KAFKA_BROKERS: 'kafka' })).toThrow(ConfigError);
+    expect(() => loadOrchestratorConfig({ KAFKA_BROKERS: 'a:9092,' })).toThrow(ConfigError);
+    expect(() => loadOrchestratorConfig({ OUTBOX_POLL_MS: '0' })).toThrow(ConfigError);
+  });
+
   it('treats an empty INSTANCE_ID (as in .env.example) as the hostname', () => {
     expect(loadOrchestratorConfig({ INSTANCE_ID: '' }).INSTANCE_ID).toBe(hostname());
     expect(loadOrchestratorConfig({ INSTANCE_ID: 'orch-2' }).INSTANCE_ID).toBe('orch-2');

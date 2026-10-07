@@ -1,6 +1,7 @@
 /**
- * `npm run invariants`: checks I1–I6 against the live stack (section 16), for every
- * transfer the Orchestrator knows, or only those created since `--since <ISO time>`.
+ * `npm run invariants`: checks I1–I6 (section 16) and I8 (the outbox, ADR-025) against the
+ * live stack, for every transfer the Orchestrator knows, or only those created since
+ * `--since <ISO time>`. I8 expects a quiet stack: every outbox event published.
  *
  * There is no baseline here, so I2–I4 are evaluated per transfer: the bank operations and
  * journals carrying the in-scope transfer ids must add up (`checkScoped`). That is exact
@@ -15,6 +16,9 @@ import {
   checkI1,
   checkI5,
   checkI6,
+  checkI8,
+  loadOutboxFacts,
+  outboxCutoff,
   checkScoped,
   collectEvidence,
   formatResults,
@@ -75,7 +79,16 @@ async function main(): Promise<number> {
       i2.ok = false;
     }
 
-    const results = [await checkI1(deps), i2, i3, i4, checkI5(evidence), checkI6(transfers)].filter(
+    // I8 (ADR-025): a quiet stack has every outbox event published.
+    const i8 = checkI8(
+      await loadOutboxFacts(
+        deps.orchDb,
+        transfers.map((t) => t.id),
+      ),
+      await outboxCutoff(deps.orchDb),
+      true,
+    );
+    const results = [await checkI1(deps), i2, i3, i4, checkI5(evidence), checkI6(transfers), i8].filter(
       (r) => r !== undefined,
     );
     process.stdout.write(`${formatResults(results)}\n`);

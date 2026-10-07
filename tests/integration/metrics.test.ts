@@ -39,6 +39,10 @@ const SERVICES: { service: string; url: string; metrics: Expected[] }[] = [
       { name: 'recovery_runs_total', type: 'counter', labels: ['result'] },
       { name: 'transfers_in_flight', type: 'gauge', labels: ['state'] },
       { name: 'manual_review_total', type: 'counter', labels: ['reason'] },
+      // Phase 2, item 1 (ADR-025): the outbox relay.
+      { name: 'outbox_published_total', type: 'counter', labels: [] },
+      { name: 'outbox_publish_failures_total', type: 'counter', labels: [] },
+      { name: 'outbox_unpublished', type: 'gauge', labels: [] },
     ],
   },
   {

@@ -3,8 +3,19 @@
  * reject each way the books can be wrong. The live data already showed I3/I4/I5 catching
  * the M3 mutation artifacts (ADR-021); these pin every branch deterministically.
  */
+import type { Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
-import { checkI5, checkI6, checkI7, checkScoped, type Evidence, type RunTransfer } from './invariants';
+import {
+  checkI5,
+  checkI6,
+  checkI7,
+  checkI8,
+  checkScoped,
+  readQuery,
+  type Evidence,
+  type OutboxFacts,
+  type RunTransfer,
+} from './invariants';
 import type { JournalView } from './ledgerClient';
 
 const AMOUNT = 1000n;
@@ -130,5 +141,97 @@ describe('I6 and I7', () => {
     expect(checkI7([{ idempotencyKey: 'missing', responseIds: ['x'] }], stored).ok).toBe(false);
     const pending = [transfer('DEBIT_SENT', { id: 'x', idempotencyKey: 'k' })];
     expect(checkI7([{ idempotencyKey: 'k', responseIds: ['x'] }], pending).ok).toBe(false);
+  });
+});
+
+describe('checkI8 (the outbox, ADR-025)', () => {
+  const cutoff = new Date('2026-10-07T00:00:00Z');
+  const after = new Date('2026-10-07T01:00:00Z');
+  const before = new Date('2026-10-06T23:00:00Z');
+  const facts = (overrides: Partial<OutboxFacts> = {}): OutboxFacts => ({
+    transferId: 't1',
+    state: 'SUCCESS',
+    amount: 12_500n,
+    terminalAt: after,
+    events: [
+      {
+        eventType: 'transfer.succeeded',
+        payload: { transfer_id: 't1', state: 'SUCCESS', amount: '12500' },
+        publishedAt: after,
+      },
+    ],
+    ...overrides,
+  });
+
+  it('holds for one published event of the matching type', () => {
+    expect(checkI8([facts()], cutoff, true).ok).toBe(true);
+  });
+
+  it('fails a terminal transfer with no event, or with two', () => {
+    expect(checkI8([facts({ events: [] })], cutoff, true).ok).toBe(false);
+    const one = facts().events;
+    expect(checkI8([facts({ events: [...one, ...one] })], cutoff, true).ok).toBe(false);
+  });
+
+  it('fails an event of the wrong type, or a payload naming another transfer, state or amount', () => {
+    const wrongType = facts({ state: 'FAILED' });
+    expect(checkI8([wrongType], cutoff, true).ok).toBe(false);
+    for (const payload of [
+      { transfer_id: 'other', state: 'SUCCESS', amount: '12500' },
+      { transfer_id: 't1', state: 'FAILED', amount: '12500' },
+      { transfer_id: 't1', state: 'SUCCESS', amount: 12500 },
+    ]) {
+      const f = facts({ events: [{ eventType: 'transfer.succeeded', payload, publishedAt: after }] });
+      expect(checkI8([f], cutoff, true).ok).toBe(false);
+    }
+  });
+
+  it('requires publication only on a quiet stack', () => {
+    const [event] = facts().events;
+    if (event === undefined) throw new Error('fixture has no event');
+    const unpublished = facts({ events: [{ ...event, publishedAt: null }] });
+    expect(checkI8([unpublished], cutoff, true).ok).toBe(false);
+    expect(checkI8([unpublished], cutoff, false).ok).toBe(true);
+  });
+
+  it('expects no event before the outbox existed, nor for a non-terminal transfer', () => {
+    expect(checkI8([facts({ terminalAt: before, events: [] })], cutoff, true).ok).toBe(true);
+    expect(checkI8([facts({ terminalAt: before })], cutoff, true).ok).toBe(false);
+    expect(checkI8([facts({ state: 'DEBIT_SENT', terminalAt: null, events: [] })], cutoff, true).ok).toBe(true);
+    expect(checkI8([facts({ state: 'DEBIT_SENT', terminalAt: null })], cutoff, true).ok).toBe(false);
+  });
+});
+
+describe('readQuery (ADR-021, 2026-10-07 amendment)', () => {
+  const ok = { rows: [{ n: 1 }] };
+  const fakePool = (answers: unknown[]): { pool: Pool; calls: () => number } => {
+    let calls = 0;
+    const pool = {
+      query: () => {
+        const next = answers[calls++];
+        return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
+      },
+    } as unknown as Pool;
+    return { pool, calls: () => calls };
+  };
+  const reset = (): Error => Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+
+  it('retries a reset connection and returns the result', { timeout: 10_000 }, async () => {
+    const { pool, calls } = fakePool([reset(), ok]);
+    expect((await readQuery(pool, 'SELECT 1')).rows).toEqual([{ n: 1 }]);
+    expect(calls()).toBe(2);
+  });
+
+  it('gives up after three attempts', { timeout: 10_000 }, async () => {
+    const { pool, calls } = fakePool([reset(), reset(), reset(), ok]);
+    await expect(readQuery(pool, 'SELECT 1')).rejects.toThrow('ECONNRESET');
+    expect(calls()).toBe(3);
+  });
+
+  it('never retries a SQL error', async () => {
+    const sqlError = Object.assign(new Error('relation does not exist'), { code: '42P01' });
+    const { pool, calls } = fakePool([sqlError, ok]);
+    await expect(readQuery(pool, 'SELECT 1')).rejects.toThrow('relation does not exist');
+    expect(calls()).toBe(1);
   });
 });

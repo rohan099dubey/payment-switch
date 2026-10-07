@@ -1,6 +1,7 @@
 import { collectDefaultMetrics, Counter, Gauge, Histogram, type Registry } from 'prom-client';
 import type { SagaObserver } from './domain/saga';
 import { TransferState } from './domain/states';
+import type { RelayObserver } from './outbox/relay';
 import type { RecoveryObserver } from './recovery/worker';
 
 export interface OrchestratorMetrics {
@@ -16,6 +17,12 @@ export interface OrchestratorMetrics {
   recoveryRuns: Counter<'result'>;
   /** Non-terminal transfers by state, refreshed every recovery loop. */
   transfersInFlight: Gauge<'state'>;
+  /** Phase 2 (ADR-025): outbox events acknowledged by Kafka. */
+  outboxPublished: Counter;
+  /** Relay iterations that could not publish; the events stay in the outbox. */
+  outboxPublishFailures: Counter;
+  /** Outbox rows not yet published: the relay's lag, refreshed every iteration. */
+  outboxUnpublished: Gauge;
 }
 
 /** Orchestrator metrics from spec section 17. */
@@ -66,6 +73,21 @@ export function createOrchestratorMetrics(registry: Registry): OrchestratorMetri
       labelNames: ['state'] as const,
       registers: [registry],
     }),
+    outboxPublished: new Counter({
+      name: 'outbox_published_total',
+      help: 'Outbox events acknowledged by Kafka (acks=all)',
+      registers: [registry],
+    }),
+    outboxPublishFailures: new Counter({
+      name: 'outbox_publish_failures_total',
+      help: 'Outbox relay iterations that could not publish; their events stay in the outbox',
+      registers: [registry],
+    }),
+    outboxUnpublished: new Gauge({
+      name: 'outbox_unpublished',
+      help: 'Outbox rows not yet published to Kafka, refreshed every relay iteration',
+      registers: [registry],
+    }),
   };
 }
 
@@ -94,6 +116,20 @@ export function recoveryObserver(metrics: OrchestratorMetrics): RecoveryObserver
     },
     inFlight: (counts) => {
       for (const [state, n] of counts) metrics.transfersInFlight.set({ state }, n);
+    },
+  };
+}
+
+export function relayObserver(metrics: OrchestratorMetrics): RelayObserver {
+  return {
+    published: (count) => {
+      metrics.outboxPublished.inc(count);
+    },
+    failed: () => {
+      metrics.outboxPublishFailures.inc();
+    },
+    unpublished: (count) => {
+      metrics.outboxUnpublished.set(count);
     },
   };
 }

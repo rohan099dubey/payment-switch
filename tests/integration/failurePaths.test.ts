@@ -418,6 +418,8 @@ function startSecondOrchestrator(): ChildProcess {
       DATABASE_URL: ORCH_DB,
       BANK_ENDPOINTS: 'bank_a=localhost:50061,bank_b=localhost:50062',
       LEDGER_ADDR: 'localhost:50052',
+      // Its outbox relay shares the outbox with the container's (SKIP LOCKED, ADR-025).
+      KAFKA_BROKERS: 'localhost:9094',
       INSTANCE_ID: 'orch-m6-second',
       LOG_LEVEL: 'warn',
     },

@@ -8,6 +8,11 @@ import { Pool } from 'pg';
 import { BankAdmin, type BankId } from './bankAdmin';
 import { DEV_CLIENTS, GatewayClient, type HttpResult } from './gatewayClient';
 import {
+  awaitOutboxPublished,
+  readQuery,
+  checkI8,
+  loadOutboxFacts,
+  outboxCutoff,
   checkI1,
   checkI2,
   checkI3,
@@ -72,7 +77,8 @@ export async function quiesce(stack: ChaosStack, timeoutMs = 180_000): Promise<v
   await waitFor(
     'no transfer in flight',
     async () => {
-      const r = await stack.orchDb.query<{ n: number }>(
+      const r = await readQuery<{ n: number }>(
+        stack.orchDb,
         `SELECT count(*)::int AS n FROM transfers WHERE ${NON_TERMINAL_SQL}`,
       );
       return r.rows[0]?.n === 0;
@@ -101,7 +107,8 @@ export async function awaitAllTerminal(stack: ChaosStack, keyPrefix: string, tim
   await waitFor(
     `every ${keyPrefix}* transfer terminal`,
     async () => {
-      const r = await stack.orchDb.query<{ n: number }>(
+      const r = await readQuery<{ n: number }>(
+        stack.orchDb,
         `SELECT count(*)::int AS n FROM transfers WHERE idempotency_key LIKE $1 || '%' AND ${NON_TERMINAL_SQL}`,
         [keyPrefix],
       );
@@ -186,6 +193,10 @@ export async function evaluate(
 ): Promise<RunReport> {
   const transfers = await loadTransfers(stack.orchDb, { keyPrefix });
   const evidence = await collectEvidence(stack, transfers);
+  // I8 (ADR-025): the relay may still be draining; Kafka is up, so it must catch up.
+  const ids = transfers.map((t) => t.id);
+  await awaitOutboxPublished(stack.orchDb, ids, 120_000);
+  const outbox = checkI8(await loadOutboxFacts(stack.orchDb, ids), await outboxCutoff(stack.orchDb), true);
   const results = [
     await checkI1(stack),
     await checkI2(stack, baseline),
@@ -194,6 +205,7 @@ export async function evaluate(
     checkI5(evidence),
     checkI6(transfers),
     ...(duplicates === undefined ? [] : [checkI7(duplicates, transfers)]),
+    outbox,
   ];
   return { results, transfers };
 }
