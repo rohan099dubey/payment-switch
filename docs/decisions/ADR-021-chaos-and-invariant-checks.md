@@ -87,3 +87,29 @@ design. The fix is a clean slate (`npm run stack:down && npm run stack:up`), whi
 the owner's call because it deletes every development database. Until then,
 `npm run invariants -- --since <time>` checks everything after the artifacts. From M7 on,
 mutation runs use their own databases, never the shared ones.
+
+## Amendment (2026-10-07): resolved, and two facts from the first CI runs
+
+- **The M3 mutation artifacts are gone.** The owner reset the development stack on
+  2026-10-07 after a verified `pg_dumpall` backup
+  (`D:\WORK\DEV\PROJECTS\PaymentSwitch_DEL_backups\2026-10-07-pre-reset\`). The unscoped
+  `npm run invariants` passes on the reset stack. `--since` is still useful to check
+  just one run.
+- **Crash test: `registered` can be less than `sent`.** The crash test sends each request
+  once and never retries it. A request that reaches the Gateway while the Orchestrator is
+  dead, before its `transfers` row is inserted, gets a retry-safe `503` and has no row and
+  no effects. The test requires every *registered* transfer to finish and I1–I6 to hold
+  over the test accounts, so a stray debit from an unregistered request would fail I2 or
+  I4. On the first GitHub run it was 192 of 200. Docker Desktop has always registered 200,
+  because its slower restart leaves fewer requests in the gap.
+- **I7's sample count depends on the kill timing.** It covers the planned 5% duplicates
+  plus every request resent after a kill, so the count varies by machine: 54 on the
+  GitHub runner and 151 on Docker Desktop for `TRANSFER_COUNT=1000`, seed 1. Every sample
+  must still return one id, the stored one, in a terminal state.
+- **Run the unscoped checker only on a quiet stack.** Straight after
+  `npm run test:integration` it can report I5/I6 failures for about 15 s.
+  `orchestratorRepo.test.ts` hands its synthetic rows to recovery in `afterAll`, but they
+  still hold their insert-time lease (`LEASE_MS` = 15 s), so recovery claims them only
+  once the lease expires. They then fail cleanly (`PAYER_ACCOUNT_NOT_FOUND`). The checker
+  is right to count in-flight transfers as violations, and it is not loosened. Neither CI
+  job runs it straight after the integration suite.
