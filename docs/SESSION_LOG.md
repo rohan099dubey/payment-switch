@@ -1055,3 +1055,84 @@ not to wait on them for required work that cannot damage the project.
 - PostgreSQL 16's `pg_dumpall` now writes `\restrict` / `\unrestrict` lines with a random
   key, which is why each dump ends in a random-looking token before the completion
   comment. That is expected, not corruption.
+
+---
+
+## 2026-10-07 — Session 3 (continued) — First CI runs; the exactly-once bug they found (ADR-024)
+
+**Status at end:** M0–M9 `DONE`. Definition of done **7 of 8**; the last box ("explainable
+without notes") is the owner's to confirm. `main` = `origin/main`. All three CI jobs green.
+
+**Done**
+- The owner reset the dev stack (backup first) and ran `gh auth login` / `gh auth refresh
+  -s workflow` as `rohan099dubey`. I created the **private** repo
+  `rohan099dubey/payment-switch` and added `origin`. A repo-local credential helper
+  (`gh auth git-credential`) makes git authenticate as `rohan099dubey`, not the second
+  identity in Credential Manager. I pushed `main`.
+- First push run: `static` + `integration` green. First `nightly`: seed 1 green, **seed 2
+  red**.
+- Root cause from the uploaded `compose-logs-nightly` artifact (timeline in ADR-024): a
+  Debit timed out (`late_apply`), the retry was refused (`INSUFFICIENT_FUNDS`), the
+  transfer `FAILED`, then the first Debit applied. Rejections leave no operation row
+  (§8), so nothing fenced the reference. The credit leg has the same hole.
+- Red first: two `failurePaths` tests play the late Debit/Credit after the terminal
+  state. Both `APPLIED` on the old code.
+- Fix (ADR-024): `failFenced` in `saga.ts` calls `Resolve` before any definite-failure
+  branch; `settle` now shares `resolveLeg` / `onResolution` / `unresolved`. The unit test
+  that pinned the old behaviour ("a definite failure after an unknown one is taken") is
+  replaced by 7 fence tests. A skip-the-fence mutant fails 14. Two orchestrator
+  integration assertions now require the `VOIDED` tombstone instead of "no row".
+- Diagrams (`state-machine`, `sequence-credit-fails`) re-rendered with the fence.
+  README, CONTEXT (rule 2, deviation table) and the ADR-021 amendment updated.
+
+**Results (measured)**
+```text
+local, c5a82c1: lint/typecheck clean; unit 605/605; integration 181/181
+  seed 1: 9,466 SUCCESS / 518 REVERSED / 16 FAILED, I1-I7, 0 manual review; crash 200/200
+  seed 2: 9,399 / 521 / 80, I1-I7, 0 manual review; crash 200/200
+  invariants --since 2026-10-07T06:41:27Z -> 20,469 transfers, all hold
+GitHub, 17c5e9e (before the fix):
+  push 37580346433: static OK (29 unit files), integration OK (10 files; chaos 1000: 958/42; crash 192 of 200 registered)
+  nightly 37581136799: seed 1 OK; seed 2 FAIL: I2 40,000,000 -> 39,958,307; I5 b9bb6ea6 FAILED with DEBIT APPLIED
+GitHub, c5a82c1 (the fix):
+  push 37584320506: static (unit 605/605), integration (181/181; chaos 1000 2/2)
+  nightly 37584333954: seed 1 9,468/520/12; seed 2 9,407/525/68; unscoped invariants over 20,400 transfers: all hold
+```
+
+**Decisions**
+- Fence on **every** definite refusal, not only after an observed timeout: an earlier
+  attempt may come from a driver that crashed and left no trace. (ADR-024)
+- The fix is in the switch, not the bank. The bank stands in for an external system with
+  a fixed contract (§8, the M2 acceptance tests). The switch uses the RPC the bank already
+  offers.
+- DoD item 4 was re-justified with runs on the fixed code. It had passed on the buggy code
+  too (M7, M9): two green chaos runs did not prove the bug absent, and the nightly found
+  it. PROGRESS says so in that box.
+
+**Gotchas**
+- **I ran the red tests against the shared dev stack.** Because the bug was real, they
+  left two permanently inconsistent transfers (`c9346799`, `5c784905`, ±1,000 paise); the
+  unscoped checker reports exactly those. A red test against code with a known money bug
+  is a mutation run: use a throwaway Compose project (ADR-023), as the M7 gotcha already
+  said.
+- The unscoped checker fails for about 15 s right after `test:integration`: the
+  `orchestratorRepo` synthetic rows still hold their insert-time lease. Timing, not a bug;
+  ADR-021 amendment.
+- The crash test can register fewer than it sends (192 of 200 on the GitHub runner): a
+  request that hits a dead Orchestrator before its row exists gets a retry-safe 503 and has
+  no effects. I7's sample count likewise depends on the kill timing (54 vs 151).
+- `gh` installed by winget is on the Windows PATH, but MSYS2 UCRT64 does not inherit it.
+  Use PowerShell, or add the winget `Packages\...\bin` folder to `~/.bashrc`.
+- Without the `workflow` scope, GitHub rejects a push that contains `.github/workflows/*`:
+  `gh auth refresh -s workflow`.
+- GitHub logs keep ANSI codes as literal `^[[..m` text; strip them before grepping counts.
+- Python in a bash heredoc: `\2` or `\b` inside a normal string becomes a control
+  character (it mangled a Windows path twice). Use `chr(92)`, or write the script with the
+  Write tool.
+
+**Next action**
+- The owner confirms the last DoD box; then phase 2 (§19) may start. Optionally the owner
+  resets the dev stack again to clear the two red-test transfers.
+
+**Open questions**
+- None about the design.

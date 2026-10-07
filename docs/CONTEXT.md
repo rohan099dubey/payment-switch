@@ -17,8 +17,9 @@ crashes mid-transfer.
 | | |
 |---|---|
 | **Active milestone** | **None. Phase 1 milestones M0–M9 are all `DONE`.** |
-| **Definition of done** | 6 of 8 ticked. **Open:** "tests pass in CI" needs a GitHub remote (the workflow has never run), and "explainable without notes" is the owner's to confirm. Phase 2 (§19) starts only when all 8 are ticked |
-| **Next action** | The owner's decisions: add a GitHub remote and push (then watch the `static` and `integration` jobs, and trigger `nightly` with `workflow_dispatch`), and whether to reset the development stack (ADR-021) |
+| **Definition of done** | 7 of 8 ticked. **Open:** "explainable without notes", the owner's to confirm. Phase 2 (§19) starts only when all 8 are ticked (the owner chose to close phase 1 first) |
+| **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. All three jobs green on `c5a82c1`. The first `nightly` found a real bug, fixed in ADR-024 |
+| **Next action** | The owner confirms the last DoD box. Optional: reset the dev stack again to clear the two red-test transfers (ADR-021 amendment) |
 | **Read first for phase 2** | `ARCHITECTURE.md` section 19 (Phase 2 extensions), and only once the definition of done is complete |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
@@ -28,8 +29,11 @@ believe `PROGRESS.md` and correct this one.
 work on the session's branch. Merge into `main` only when the milestone is `DONE`: every
 box ticked, and `lint`, `typecheck`, `test` and the acceptance commands green. Merge
 fast-forward only (`git merge --ff-only`). If that is impossible, rebase onto `main`,
-re-run the checks, then merge. Never merge a half-finished milestone. There is no git
-remote yet, so nothing is pushed.
+re-run the checks, then merge. Never merge a half-finished milestone. Since 2026-10-07
+`main` is pushed to the private `origin` (the owner set it up and approved pushing as part
+of closing phase 1). Git authenticates as `rohan099dubey` through a **repo-local**
+credential helper (`gh auth git-credential`); `gh` 2.102.0 is installed per-user by
+winget. Push only `main`, only after it passes the full check chain.
 
 ## Services
 
@@ -166,18 +170,18 @@ v24, which is forward-compatible with the ES2022/CommonJS target; Docker and CI 
 
 ## Known open questions
 
-Two, both the owner's to decide (not design questions):
+None about the design. One housekeeping item, the owner's:
 
-- **Development stack reset** (`npm run stack:down && npm run stack:up`) to clear the M3
-  mutation artifacts (ADR-021). Until then, use `npm run invariants -- --since <ISO>` on
-  this stack. A clean-room project in M9 showed the unscoped check passing on fresh
-  databases. **The reset is prepared:** a verified `pg_dumpall` backup of all three
-  Postgres containers is in `D:\WORK\DEV\PROJECTS\PaymentSwitch_DEL_backups\2026-10-07-pre-reset\`
-  (restore steps in its `RESTORE.md`). Running `stack:down` (it deletes the volumes) is
-  blocked for Claude by the auto-mode classifier, so the owner runs it.
-- **A GitHub remote**, so CI can run and the last open "tests pass in CI" box can be
-  checked. The owner has to sign in: `gh` is not installed, and Windows Credential
-  Manager holds two different GitHub identities.
+- **The dev stack holds two inconsistent transfers** (`c9346799`, `5c784905`), left by
+  the ADR-024 red tests, which were run against the shared stack while the bug was live.
+  The unscoped `npm run invariants` reports I4/I5 for those two only. Clear them with
+  another reset (`npm run stack:down && npm run stack:up && npm run seed`), which Claude
+  cannot run (the auto-mode classifier blocks volume deletion). Until then, use
+  `--since`. The M3 artifacts are gone (reset 2026-10-07, backup in
+  `D:\WORK\DEV\PROJECTS\PaymentSwitch_DEL_backups\2026-10-07-pre-reset\`).
+- **Rule for red tests:** run a test against code with a known money bug only in a
+  throwaway Compose project (`COMPOSE_PROJECT_NAME=...`, ADR-023), never against the
+  shared stack.
 
 Both design questions from M0–M2 were resolved in M3 (`ADR-010`, `ADR-017`). Two facts
 from that resolution shape every later milestone:
