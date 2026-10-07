@@ -1,3 +1,5 @@
+// First import: tracing must hook gRPC, http and pg before they load (ADR-028).
+import { shutdownTracing } from '@switch/common/tracing';
 import path from 'node:path';
 import { createInstrument, createLogger, createPool, runMigrations, startHealthServer } from '@switch/common';
 import type { Pool } from 'pg';
@@ -92,6 +94,7 @@ async function main(): Promise<void> {
       for (const side of bankSides.values()) side.close();
       ledger.close();
       await pool.end();
+      await shutdownTracing();
       logger.info('reconciliation service stopped');
       process.exit(0);
     })().catch((err: unknown) => {

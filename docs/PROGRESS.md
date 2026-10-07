@@ -23,6 +23,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | P2-1 | Transactional outbox & Kafka (phase 2, §19 item 1) | `DONE` | 6, 19 (+ ADR-025) | 2026-10-07 | see `git log --grep "P2-1"` |
 | P2-2 | Notification service (phase 2, §19 item 2) | `DONE` | 19 (+ ADR-025, ADR-026) | 2026-10-07 | see `git log --grep "P2-2"` |
 | P2-3 | Reconciliation service (phase 2, §19 item 3) | `DONE` | 7, 8, 9, 19 (+ ADR-027) | 2026-10-07 | see `git log --grep "P2-3"` |
+| P2-4 | Tracing & dashboards (phase 2, §19 item 4) | `IN_PROGRESS` | 17, 19 (+ ADR-028) | — | — |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -411,3 +412,26 @@ Acceptance
 - [x] The 10,000-transfer test passes twice with different seeds, with **I8–I10** holding (seed 1: 9,469 / 519 / 12; seed 2: 9,400 / 524 / 76; I1–I10, 0 manual review; I10: 0 of 10,000 transfers with an open break; crash recovery passes with I8–I10)
 - [x] `npm run invariants` green after the runs (`--since 2026-10-07T12:45:02Z`: 20,487 transfers, I1–I6 and I8–I10 hold)
 - [x] CI green on GitHub: PR rohan099dubey/payment-switch#3 (`static`, `integration` on `3f41d87`); `nightly` run 37624914860 (seed 1: 9,467 / 519 / 14; seed 2: 9,402 / 526 / 72; I10: 0 open breaks each; unscoped invariants on the fresh CI stack: 20,239 transfers, I1–I10 hold)
+
+## P2-4 — Tracing & dashboards (phase 2, §19 item 4)
+
+**Scope:** OpenTelemetry (`@opentelemetry/sdk-node`, gRPC, HTTP and `pg` instrumentation)
+exporting OTLP to Jaeger in Compose; Prometheus and Grafana with committed dashboard JSON:
+throughput, latency, in-flight transfers, recovery activity, injected chaos. Details: `ADR-028`.
+
+Implementation
+- [x] `@switch/common/tracing` (subpath export): starts only with `OTEL_EXPORTER_OTLP_ENDPOINT`; gRPC, HTTP (no probes) and `pg` (`requireParentSpan`); OTLP/HTTP; `shutdownTracing()` flushes on SIGTERM
+- [x] First import in all six services' `main.ts`; `OTEL_SERVICE_NAME` per service in Compose (bank-b overrides the inherited anchor)
+- [x] Compose: `jaegertracing/jaeger:2.11.0`, `prom/prometheus:v3.7.0`, `grafana/grafana:12.2.0`, each with a healthcheck; nothing on the payment path depends on them
+- [x] `observability/prometheus/prometheus.yml` (7 jobs, 5 s); Grafana provisioning (Prometheus and Jaeger datasources, a read-only dashboard provider)
+- [x] `observability/grafana/dashboards/payment-switch.json`: 15 panels in Throughput / Latency / In flight and recovery / Injected chaos / Events
+
+Acceptance
+- [x] One transfer is one trace: 64 spans across gateway, orchestrator, bank-a, bank-b and ledger, including their Postgres statements (observed in Jaeger)
+- [x] Unit (`tests/unit/dashboards.test.ts`, 4): the groups, Prometheus targets, no grid overlap, **every queried metric defined in source**. A misspelt-metric mutant fails it, naming the metric
+- [x] Integration (`tests/integration/observability.test.ts`, 4): 7/7 targets up; **every dashboard query runs in Prometheus**; Grafana serves the dashboard and the datasource is healthy; the trace across 5 services is found for a fresh transfer
+- [x] Full integration suite green: 216/216 in 14 files (with tracing on)
+- [x] The 10,000-transfer test passes twice with different seeds, I1–I10, with tracing on (seed 1: 9,471 / 519 / 10; seed 2: 9,400 / 526 / 74; 0 manual review)
+- [x] `npm run invariants` green after the runs (`--since 2026-10-07T13:10:06Z`: 20,453 transfers, I1–I6 and I8–I10 hold)
+- [ ] The cost of tracing measured with k6 and recorded as a new row in `docs/benchmarks.md`. **OPEN:** the first A/B run was confounded (the tracing-**off** run came out slower). Raw numbers are in SESSION_LOG; redo the A/B before writing any row
+- [ ] CI green on GitHub

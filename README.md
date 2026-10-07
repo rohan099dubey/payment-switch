@@ -30,7 +30,10 @@ simulated merchant webhook with exponential backoff, and dead-letters an event t
 ([ADR-026](docs/decisions/ADR-026-notification-service.md)). A **reconciliation service**
 (gRPC 50053) compares each bank's statement with the ledger's journals every 5 minutes and
 records any break: missing in ledger, missing at bank, or amount mismatch
-([ADR-027](docs/decisions/ADR-027-reconciliation-service.md)).
+([ADR-027](docs/decisions/ADR-027-reconciliation-service.md)). Every request is traced
+with OpenTelemetry into **Jaeger**, every service is scraped by **Prometheus**, and a
+committed **Grafana** dashboard shows throughput, latency, in-flight transfers, recovery and
+injected chaos ([ADR-028](docs/decisions/ADR-028-tracing-and-dashboards.md)).
 
 Each transfer is a persisted state machine driven by the Orchestrator. It has ten states,
 four of them terminal, and **a timeout never changes the state**:
@@ -148,6 +151,10 @@ read it.
   `status` is terminal.
 - A replay returns the transfer's **current** state, not a copy of the first response,
   so a request that returned `202 PENDING` can return `SUCCEEDED` on retry.
+
+To watch it work, open the dashboard at <http://localhost:3000/d/payment-switch> (Grafana),
+traces at <http://localhost:16686> (Jaeger: pick the service `gateway`), and raw metrics at
+<http://localhost:9090> (Prometheus).
 
 `npm run stack:down` stops everything and deletes the volumes, so every database is
 reset.
@@ -305,6 +312,7 @@ Where the implementation fills a gap in the specification or deviates from it:
 | [025](docs/decisions/ADR-025-outbox-and-kafka.md) | Transactional outbox and Kafka (phase 2): an event for every terminal state, money as a string, Kafka 3.9 for kafkajs, no Kafka on the payment path |
 | [026](docs/decisions/ADR-026-notification-service.md) | Notification service (phase 2): its own database, a dedupe table keyed by event id, a deterministic simulated webhook, 5 attempts then the dead-letter topic |
 | [027](docs/decisions/ADR-027-reconciliation-service.md) | Reconciliation (phase 2): legs matched by (bank, reference, operation), paged `GetStatement`, an added read-only ledger range query, a settle lag, breaks that open and resolve |
+| [028](docs/decisions/ADR-028-tracing-and-dashboards.md) | Tracing and dashboards (phase 2): an OTel bootstrap imported first, `pg` spans only inside requests, Jaeger 2.11, Prometheus 3.7, Grafana 12.2 with a dashboard tested against the real metrics |
 
 ## 8. What I built and why
 
@@ -400,3 +408,10 @@ Five lines after each milestone, each one explainable out loud without notes.
 3. Its first run over a full day of data (185,876 statement lines against 185,664 journals) found exactly the two transfers I had corrupted earlier with a red test, from outside the switch, matching what the switch's own invariants said.
 4. Statement and journal reads are paged with a keyset cursor that keeps Postgres's microsecond timestamps, so no row is skipped or repeated even when thousands share a millisecond.
 5. A new invariant, I10 (no open break names a switch transfer), held for 10,000 transfers in each of two chaos runs with Orchestrator kills.
+
+**P2-4 — Tracing & dashboards** (phase 2)
+1. Every request is traced with OpenTelemetry: one transfer is a single trace of about 64 spans across the Gateway, Orchestrator, both banks and the Ledger, down to each service's own Postgres statements.
+2. The tracing bootstrap is the first import of every service, because OpenTelemetry can only hook gRPC, HTTP and Postgres if it registers before they load.
+3. Background polling (recovery, the outbox relay, the reconciliation scheduler) creates no traces of its own: Postgres spans are recorded only inside a request, so real traces are not buried.
+4. Prometheus scrapes all seven services, and a committed Grafana dashboard shows throughput, latency, in-flight transfers, recovery activity and injected chaos.
+5. The dashboard is tested: a unit test fails on any panel that queries a metric no service defines (a misspelt metric was caught by name), and an integration test runs every panel's query against the live Prometheus.

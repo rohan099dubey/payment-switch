@@ -1,3 +1,5 @@
+// First import: tracing must hook gRPC, http and pg before they load (ADR-028).
+import { shutdownTracing } from '@switch/common/tracing';
 import { createLogger } from '@switch/common';
 import { Redis } from 'ioredis';
 import { Registry } from 'prom-client';
@@ -74,6 +76,7 @@ async function main(): Promise<void> {
       orchestrator.close();
       redis.disconnect();
       clearTimeout(force);
+      await shutdownTracing();
       logger.info('gateway stopped');
       process.exit(0);
     })().catch((err: unknown) => {
