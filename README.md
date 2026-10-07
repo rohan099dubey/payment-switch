@@ -182,10 +182,14 @@ restarts it, and requires every one to end in `SUCCESS` with I1–I6 holding.
 
 The chaos tests scope their checks to their own accounts and transfers, and
 `npm run invariants -- --since` does the same per transfer
-([ADR-021](docs/decisions/ADR-021-chaos-and-invariant-checks.md)). On the original
-development stack, the unscoped command still reports books that an early mutation test
-broke on purpose, before tests were moved off the shared databases. A fresh stack
-(`npm run stack:down && npm run stack:up`) has no such history.
+([ADR-021](docs/decisions/ADR-021-chaos-and-invariant-checks.md)). The unscoped command
+checks every transfer the stack has ever seen; run it once the stack is quiet, because a
+transfer still in flight counts as a violation.
+
+**In CI:** every push runs the integration suite and a 1,000-transfer chaos run on a fresh
+GitHub Actions stack, and the nightly job runs the full 10,000-transfer test with two
+seeds, then the unscoped checker
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 ## 5. Failure scenarios handled
 
