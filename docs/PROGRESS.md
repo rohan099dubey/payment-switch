@@ -20,7 +20,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M7 | Chaos & invariants | `DONE` | 16 | 2026-10-06 | see `git log --grep "M7"` |
 | M8 | Load & metrics | `DONE` | 16, 17 | 2026-10-06 | see `git log --grep "M8"` |
 | M9 | Polish | `DONE` | 17, 20 | 2026-10-07 | see `git log --grep "M9"` |
-| P2-1 | Transactional outbox & Kafka (phase 2, §19 item 1) | `IN_PROGRESS` | 6, 19 (+ ADR-025) | — | — |
+| P2-1 | Transactional outbox & Kafka (phase 2, §19 item 1) | `DONE` | 6, 19 (+ ADR-025) | 2026-10-07 | see `git log --grep "P2-1"` |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -349,4 +349,4 @@ Acceptance
 - [x] Metrics test pins the three new metrics; the full integration suite passes (192/192)
 - [x] The 10,000-transfer test passes twice with different seeds, with **I8** holding for every transfer (seed 1: 9,469 / 518 / 13; seed 2: 9,396 / 524 / 80; I1–I8 hold, 0 manual review; the crash recovery test passes in both runs with I8. An earlier pair of runs failed on a Docker Desktop connection reset in the harness, not in the system: see the ADR-021 amendment)
 - [x] `npm run invariants` (I1–I6, I8) green after the runs (`--since 2026-10-07T08:36:46Z`: 20,400 transfers, all hold)
-- [ ] CI green on GitHub (`static`, `integration`, `nightly`)
+- [x] CI green on GitHub: PR rohan099dubey/payment-switch#1, `static` and `integration` on `6b7d15c`; `nightly` (both 10,000-transfer seeds plus unscoped invariants with I8) on the branch, run 37595915237. The first PR run failed a Gateway burst test, which exposed a too-short Redis timeout; fixed (ADR-019 amendment)
