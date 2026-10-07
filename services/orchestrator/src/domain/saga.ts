@@ -148,8 +148,11 @@ export class SagaEngine {
             const r = await this.debitStep(t, ctx);
             if (r.kind === 'ok')
               t = await this.cas(t, TransferState.DEBITED, ctx, { reason: 'DEBIT_CONFIRMED', detail: r.detail });
-            else if (r.kind === 'definite') t = await this.fail(t, TransferState.FAILED, r, ctx);
-            else if (r.kind === 'bug') t = await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx);
+            else if (r.kind === 'definite') {
+              const next = await this.failFenced(t, r, ctx);
+              if (next.stop) return next.transfer;
+              t = next.transfer;
+            } else if (r.kind === 'bug') t = await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx);
             else return await this.yield(t, ctx, r);
             break;
           }
@@ -162,8 +165,11 @@ export class SagaEngine {
             const r = await this.creditStep(t, ctx);
             if (r.kind === 'ok')
               t = await this.cas(t, TransferState.CREDITED, ctx, { reason: 'CREDIT_CONFIRMED', detail: r.detail });
-            else if (r.kind === 'definite') t = await this.fail(t, TransferState.REVERSING, r, ctx);
-            else if (r.kind === 'bug') t = await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx);
+            else if (r.kind === 'definite') {
+              const next = await this.failFenced(t, r, ctx);
+              if (next.stop) return next.transfer;
+              t = next.transfer;
+            } else if (r.kind === 'bug') t = await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx);
             else return await this.yield(t, ctx, r);
             break;
           }
@@ -208,73 +214,21 @@ export class SagaEngine {
       throw new Error(`settle: transfer ${t.id} is ${t.state}, not DEBIT_SENT or CREDIT_SENT`);
     }
     const debit = t.state === TransferState.DEBIT_SENT;
-    const operation: ResolveOperation = debit ? 'DEBIT' : 'CREDIT';
-    const bankId = debit ? t.payer.bankId : t.payee.bankId;
     try {
-      const resolved = await this.call(
-        t,
-        {
-          target: 'bank',
-          operation: 'Resolve',
-          bankId,
-          step: debit ? 'debit' : 'credit',
-          attempts: this.deps.policy.bankAttempts,
-          timeoutMs: this.deps.policy.bankCallTimeoutMs,
-        },
-        ctx,
-        (o) => this.deps.bank.resolve(t, operation, o),
-      );
-      if (!resolved.ok) {
-        const r = bankFailure(resolved, () => null, { bank_id: bankId, operation });
-        if (r.kind === 'unknown') return { transfer: await this.yield(t, ctx, r), resolution: null };
-        return { transfer: await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx), resolution: null };
-      }
+      const resolved = await this.resolveLeg(t, ctx);
+      if (!resolved.ok) return { transfer: await this.unresolved(t, resolved, ctx), resolution: null };
 
-      const base = { bank_id: bankId, operation, resolution: resolved.value };
-      switch (resolved.value) {
-        case 'APPLIED': {
-          const leg = await this.ledgerLeg(t, debit ? 'debit-leg' : 'credit-leg', ctx, base);
-          if (leg.kind === 'unknown') return { transfer: await this.yield(t, ctx, leg), resolution: 'APPLIED' };
-          if (leg.kind !== 'ok') {
-            const rejected = await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, leg, ctx);
-            return { transfer: rejected, resolution: 'APPLIED' };
-          }
-          const confirmed = await this.cas(t, debit ? TransferState.DEBITED : TransferState.CREDITED, ctx, {
-            reason: debit ? 'DEBIT_CONFIRMED_BY_RESOLVE' : 'CREDIT_CONFIRMED_BY_RESOLVE',
-            detail: leg.detail,
-          });
-          return { transfer: await this.advance(confirmed, ctx), resolution: 'APPLIED' };
-        }
-        case 'VOIDED': {
-          const code = debit ? FailureCode.DEBIT_NOT_CONFIRMED : FailureCode.CREDIT_NOT_CONFIRMED;
-          const message = `${operation.toLowerCase()} not confirmed: Resolve voided reference ${t.id}`;
-          const failed = await this.fail(
-            t,
-            debit ? TransferState.FAILED : TransferState.REVERSING,
-            {
-              code,
-              message,
-              detail: base,
-            },
-            ctx,
-          );
-          return { transfer: await this.advance(failed, ctx), resolution: 'VOIDED' };
-        }
-        case 'INVALID':
-          return {
-            transfer: await this.fail(
-              t,
-              TransferState.NEEDS_MANUAL_REVIEW,
-              {
-                code: FailureCode.BANK_INVARIANT_VIOLATION,
-                message: 'Resolve answered neither APPLIED nor VOIDED',
-                detail: base,
-              },
-              ctx,
-            ),
-            resolution: 'INVALID',
-          };
-      }
+      const base = { ...legOf(t), resolution: resolved.value };
+      const voided = {
+        code: debit ? FailureCode.DEBIT_NOT_CONFIRMED : FailureCode.CREDIT_NOT_CONFIRMED,
+        message: `${legOf(t).operation.toLowerCase()} not confirmed: Resolve voided reference ${t.id}`,
+        detail: base,
+      };
+      const next = await this.onResolution(t, resolved.value, voided, base, ctx);
+      return {
+        transfer: next.stop ? next.transfer : await this.advance(next.transfer, ctx),
+        resolution: resolved.value,
+      };
     } catch (err) {
       return { transfer: await this.stale(err, t), resolution: null };
     }
@@ -295,6 +249,117 @@ export class SagaEngine {
       );
     } catch (err) {
       return this.stale(err, transfer);
+    }
+  }
+
+  /**
+   * A definite failure from the bank is final only once the reference is fenced (ADR-024).
+   * Business rejections leave no operation row at the bank, so an earlier attempt for the
+   * same reference that timed out may still be in flight and apply later. `Resolve` writes
+   * the `VOIDED` tombstone that makes any such attempt fail with `REFERENCE_VOIDED`:
+   * - `VOIDED`: take the failure branch with the bank's original failure code;
+   * - `APPLIED`: an earlier attempt landed first, so the step succeeded after all;
+   * - no answer: stay in `*_SENT` and yield. Never fail an unfenced reference.
+   * `REFERENCE_VOIDED` itself (`*_NOT_CONFIRMED`) needs no call: the tombstone exists.
+   */
+  private async failFenced(
+    t: Transfer,
+    r: { code: FailureCode; message: string; detail: Record<string, unknown> },
+    ctx: SagaContext,
+  ): Promise<{ transfer: Transfer; stop: boolean }> {
+    const debit = t.state === TransferState.DEBIT_SENT;
+    const failTo = debit ? TransferState.FAILED : TransferState.REVERSING;
+    if (r.code === FailureCode.DEBIT_NOT_CONFIRMED || r.code === FailureCode.CREDIT_NOT_CONFIRMED) {
+      return { transfer: await this.fail(t, failTo, r, ctx), stop: false };
+    }
+    const resolved = await this.resolveLeg(t, ctx);
+    if (!resolved.ok) {
+      const transfer = await this.unresolved(t, resolved, ctx);
+      return { transfer, stop: !isTerminal(transfer.state) };
+    }
+    const fence = { fenced_by: 'Resolve', resolution: resolved.value };
+    return this.onResolution(
+      t,
+      resolved.value,
+      { code: r.code, message: r.message, detail: { ...r.detail, ...fence } },
+      { ...legOf(t), ...fence },
+      ctx,
+    );
+  }
+
+  /** `Resolve` on the bank that owns the current `*_SENT` leg, with the bank call policy. */
+  private resolveLeg(t: Transfer, ctx: SagaContext): Promise<CallResult<Resolution>> {
+    const { operation, bank_id: bankId } = legOf(t);
+    return this.call(
+      t,
+      {
+        target: 'bank',
+        operation: 'Resolve',
+        bankId,
+        step: operation === 'DEBIT' ? 'debit' : 'credit',
+        attempts: this.deps.policy.bankAttempts,
+        timeoutMs: this.deps.policy.bankCallTimeoutMs,
+      },
+      ctx,
+      (o) => this.deps.bank.resolve(t, operation, o),
+    );
+  }
+
+  /** `Resolve` gave no answer: yield if that is an unknown outcome, manual review if a bug. */
+  private async unresolved(
+    t: Transfer,
+    resolved: { errorClass: ErrorClass; err: unknown },
+    ctx: SagaContext,
+  ): Promise<Transfer> {
+    const r = bankFailure(resolved, () => null, legOf(t));
+    if (r.kind === 'unknown') return this.yield(t, ctx, r);
+    return this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx);
+  }
+
+  /**
+   * Acts on `Resolve`'s answer for the current `*_SENT` leg. `APPLIED`: post that leg's
+   * journal and CAS to `DEBITED` / `CREDITED`. `VOIDED`: the failure branch (`FAILED` from
+   * `DEBIT_SENT`, `REVERSING` from `CREDIT_SENT`) with `voided`. `INVALID`: manual review.
+   * `stop` means the transfer was handed to recovery and must not be driven further now.
+   */
+  private async onResolution(
+    t: Transfer,
+    resolution: Resolution,
+    voided: { code: FailureCode; message: string; detail: Record<string, unknown> },
+    base: Record<string, unknown>,
+    ctx: SagaContext,
+  ): Promise<{ transfer: Transfer; stop: boolean }> {
+    const debit = t.state === TransferState.DEBIT_SENT;
+    switch (resolution) {
+      case 'APPLIED': {
+        const leg = await this.ledgerLeg(t, debit ? 'debit-leg' : 'credit-leg', ctx, base);
+        if (leg.kind === 'unknown') return { transfer: await this.yield(t, ctx, leg), stop: true };
+        if (leg.kind !== 'ok') {
+          return { transfer: await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, leg, ctx), stop: false };
+        }
+        const confirmed = await this.cas(t, debit ? TransferState.DEBITED : TransferState.CREDITED, ctx, {
+          reason: debit ? 'DEBIT_CONFIRMED_BY_RESOLVE' : 'CREDIT_CONFIRMED_BY_RESOLVE',
+          detail: leg.detail,
+        });
+        return { transfer: confirmed, stop: false };
+      }
+      case 'VOIDED': {
+        const failed = await this.fail(t, debit ? TransferState.FAILED : TransferState.REVERSING, voided, ctx);
+        return { transfer: failed, stop: false };
+      }
+      case 'INVALID': {
+        const invalid = await this.fail(
+          t,
+          TransferState.NEEDS_MANUAL_REVIEW,
+          {
+            code: FailureCode.BANK_INVARIANT_VIOLATION,
+            message: 'Resolve answered neither APPLIED nor VOIDED',
+            detail: base,
+          },
+          ctx,
+        );
+        return { transfer: invalid, stop: false };
+      }
     }
   }
 
@@ -546,6 +611,13 @@ export class SagaEngine {
     if (yielded !== null) return yielded;
     return (await this.deps.store.getTransfer(t.id)) ?? t;
   }
+}
+
+/** The bank leg a `*_SENT` transfer is waiting on: the payer's `DEBIT` or the payee's `CREDIT`. */
+function legOf(t: Transfer): { bank_id: string; operation: ResolveOperation } {
+  return t.state === TransferState.DEBIT_SENT
+    ? { bank_id: t.payer.bankId, operation: 'DEBIT' }
+    : { bank_id: t.payee.bankId, operation: 'CREDIT' };
 }
 
 function toOutcome(errorClass: ErrorClass): DownstreamOutcome {

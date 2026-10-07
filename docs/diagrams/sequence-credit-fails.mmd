@@ -1,5 +1,6 @@
 %% Compensation: payee account does not exist, so the debit is reversed.
-%% Source: ARCHITECTURE.md section 11, "Walkthrough: payee account does not exist".
+%% Source: ARCHITECTURE.md section 11, "Walkthrough: payee account does not exist",
+%% plus the Resolve fence before the failure branch (ADR-024).
 sequenceDiagram
     autonumber
     actor C as Client
@@ -21,7 +22,11 @@ sequenceDiagram
 
     O->>B: Credit(reference_id, amount)
     B-->>O: NOT_FOUND<br/>x-error-code: ACCOUNT_NOT_FOUND
-    Note over O: classify() = DEFINITE_FAILURE.<br/>Credit failing definitely means REVERSING,<br/>never FAILED - the payer has already been debited.
+    Note over O: classify() = DEFINITE_FAILURE.<br/>Fence first (ADR-024): an earlier Credit attempt<br/>could still be on its way and apply later.
+    O->>B: Resolve(reference_id, CREDIT)
+    Note over B: Inserts a VOIDED tombstone.<br/>A late Credit now fails REFERENCE_VOIDED.
+    B-->>O: VOIDED
+    Note over O: Credit failing definitely means REVERSING,<br/>never FAILED - the payer has already been debited.
     O->>O: CAS to REVERSING<br/>failure_code = PAYEE_ACCOUNT_NOT_FOUND
 
     O->>A: ReverseDebit(reference_id)

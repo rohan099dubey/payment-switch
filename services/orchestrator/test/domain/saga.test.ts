@@ -156,9 +156,9 @@ describe('SagaEngine.advance — definite failures', () => {
     ['ACCOUNT_BLOCKED', Status.FAILED_PRECONDITION, FailureCode.PAYER_ACCOUNT_BLOCKED],
     ['REFERENCE_VOIDED', Status.FAILED_PRECONDITION, FailureCode.DEBIT_NOT_CONFIRMED],
     ['CURRENCY_MISMATCH', Status.INVALID_ARGUMENT, FailureCode.CURRENCY_MISMATCH],
-  ])('Debit %s -> FAILED / %s, nothing posted, no retry', async (bankCode, status, failureCode) => {
+  ])('Debit %s -> fenced -> FAILED / %s, nothing posted, no retry', async (bankCode, status, failureCode) => {
     const { engine, store, inline, downstream } = setup();
-    downstream.script('Debit', fail(status, bankCode));
+    downstream.script('Debit', fail(status, bankCode)).script('Resolve:DEBIT', { resolved: 'VOIDED' });
     const result = await engine.advance(store.row, inline());
 
     expect(result.state).toBe(S.FAILED);
@@ -168,6 +168,10 @@ describe('SagaEngine.advance — definite failures', () => {
     expect(store.events[1]?.reason).toBe(failureCode);
     expect(downstream.callsTo('Debit')).toHaveLength(1);
     expect(downstream.calls.filter((c) => c.name.startsWith('PostJournal'))).toHaveLength(0);
+    // ADR-024: fenced before failing. REFERENCE_VOIDED already is the tombstone.
+    const fenced = bankCode !== 'REFERENCE_VOIDED';
+    expect(downstream.callsTo('Resolve:DEBIT')).toHaveLength(fenced ? 1 : 0);
+    if (fenced) expect(store.events[1]?.detail).toMatchObject({ fenced_by: 'Resolve', resolution: 'VOIDED' });
   });
 
   it.each([
@@ -175,9 +179,9 @@ describe('SagaEngine.advance — definite failures', () => {
     ['ACCOUNT_BLOCKED', Status.FAILED_PRECONDITION, FailureCode.PAYEE_ACCOUNT_BLOCKED],
     ['REFERENCE_VOIDED', Status.FAILED_PRECONDITION, FailureCode.CREDIT_NOT_CONFIRMED],
     ['CURRENCY_MISMATCH', Status.INVALID_ARGUMENT, FailureCode.CURRENCY_MISMATCH],
-  ])('Credit %s -> REVERSING / %s -> refund -> REVERSED', async (bankCode, status, failureCode) => {
+  ])('Credit %s -> fenced -> REVERSING / %s -> refund -> REVERSED', async (bankCode, status, failureCode) => {
     const { engine, store, inline, downstream, observer } = setup();
-    downstream.script('Credit', fail(status, bankCode));
+    downstream.script('Credit', fail(status, bankCode)).script('Resolve:CREDIT', { resolved: 'VOIDED' });
     const result = await engine.advance(store.row, inline());
 
     expect(result.state).toBe(S.REVERSED);
@@ -193,6 +197,7 @@ describe('SagaEngine.advance — definite failures', () => {
       'Debit',
       'PostJournal:debit-leg',
       'Credit',
+      ...(bankCode === 'REFERENCE_VOIDED' ? [] : ['Resolve:CREDIT']),
       'ReverseDebit',
       'PostJournal:reversal',
     ]);
@@ -231,7 +236,10 @@ describe('SagaEngine.advance — bugs go to NEEDS_MANUAL_REVIEW, never retried',
     ['INVALID_REQUEST', Status.INVALID_ARGUMENT],
   ])('ReverseDebit %s -> BANK_INVARIANT_VIOLATION (a refused refund is a broken invariant)', async (code, status) => {
     const { engine, store, inline, downstream } = setup();
-    downstream.script('Credit', fail(Status.NOT_FOUND, 'ACCOUNT_NOT_FOUND')).script('ReverseDebit', fail(status, code));
+    downstream
+      .script('Credit', fail(Status.NOT_FOUND, 'ACCOUNT_NOT_FOUND'))
+      .script('Resolve:CREDIT', { resolved: 'VOIDED' })
+      .script('ReverseDebit', fail(status, code));
     const result = await engine.advance(store.row, inline());
 
     expect(result.state).toBe(S.NEEDS_MANUAL_REVIEW);
@@ -331,6 +339,7 @@ describe('SagaEngine.advance — unknown outcomes never change the state', () =>
     const { engine, store, inline, downstream } = setup();
     downstream
       .script('Credit', fail(Status.NOT_FOUND, 'ACCOUNT_NOT_FOUND'))
+      .script('Resolve:CREDIT', { resolved: 'VOIDED' })
       .script('ReverseDebit', unavailable(), unavailable(), unavailable());
     const result = await engine.advance(store.row, inline());
     expect(result.state).toBe(S.REVERSING);
@@ -345,20 +354,114 @@ describe('SagaEngine.advance — unknown outcomes never change the state', () =>
     expect(result.state).toBe(S.SUCCESS);
   });
 
-  it('a definite failure after an unknown one is taken: the retry got a real answer', async () => {
-    const { engine, store, inline, downstream } = setup();
-    downstream.script('Debit', unavailable(), fail(Status.FAILED_PRECONDITION, 'INSUFFICIENT_FUNDS'));
-    const result = await engine.advance(store.row, inline());
-    expect(result.state).toBe(S.FAILED);
-    expect(downstream.callsTo('Debit')).toHaveLength(2);
-  });
-
   it('honours the configured retry count (INLINE_BANK_RETRIES = 0 means one attempt)', async () => {
     const { engine, store, inline, downstream } = setup({ policy: { bankAttempts: 1 } });
     downstream.script('Debit', unavailable());
     const result = await engine.advance(store.row, inline());
     expect(result.state).toBe(S.DEBIT_SENT);
     expect(downstream.callsTo('Debit')).toHaveLength(1);
+  });
+});
+
+/**
+ * ADR-024. A rejection leaves no operation row at the bank, so an earlier attempt that
+ * timed out can still apply after a later attempt was refused. The nightly CI run of
+ * 2026-10-07 hit exactly this: Debit timed out (late_apply), the retry got
+ * INSUFFICIENT_FUNDS, the transfer FAILED, and the first Debit then applied.
+ */
+describe('SagaEngine.advance — a definite failure is final only once fenced (ADR-024)', () => {
+  const insufficient = (): ReturnType<typeof fail> => fail(Status.FAILED_PRECONDITION, 'INSUFFICIENT_FUNDS');
+
+  it('timeout, then INSUFFICIENT_FUNDS, Resolve VOIDED: FAILED with the original code, fenced first', async () => {
+    const { engine, store, inline, downstream, timeline } = setup();
+    downstream.script('Debit', deadline(), insufficient()).script('Resolve:DEBIT', { resolved: 'VOIDED' });
+    const result = await engine.advance(store.row, inline());
+
+    expect(result.state).toBe(S.FAILED);
+    expect(result.failureCode).toBe(FailureCode.INSUFFICIENT_FUNDS);
+    expect(downstream.callsTo('Debit')).toHaveLength(2);
+    // The fence is called in DEBIT_SENT, before the FAILED CAS.
+    expect(timeline.slice(-2)).toEqual([
+      { kind: 'call', name: 'Resolve:DEBIT', stateAtCall: S.DEBIT_SENT },
+      { kind: 'cas', to: S.FAILED },
+    ]);
+  });
+
+  it('timeout, then INSUFFICIENT_FUNDS, Resolve APPLIED: the late debit landed, so the transfer goes on', async () => {
+    const { engine, store, inline, downstream } = setup();
+    downstream.script('Debit', deadline(), insufficient()).script('Resolve:DEBIT', { resolved: 'APPLIED' });
+    const result = await engine.advance(store.row, inline());
+
+    expect(result.state).toBe(S.SUCCESS);
+    expect(result.failureCode).toBeNull();
+    expect(trail(store)).toEqual([
+      'INITIATED->DEBIT_SENT',
+      'DEBIT_SENT->DEBITED',
+      'DEBITED->CREDIT_SENT',
+      'CREDIT_SENT->CREDITED',
+      'CREDITED->SUCCESS',
+    ]);
+    expect(store.events[1]?.reason).toBe('DEBIT_CONFIRMED_BY_RESOLVE');
+    expect(downstream.callsTo('PostJournal:debit-leg')).toHaveLength(1);
+  });
+
+  it('a credit refusal with Resolve APPLIED is CREDITED, never refunded', async () => {
+    const { engine, store, inline, downstream } = setup();
+    downstream
+      .script('Credit', deadline(), fail(Status.FAILED_PRECONDITION, 'ACCOUNT_BLOCKED'))
+      .script('Resolve:CREDIT', { resolved: 'APPLIED' });
+    const result = await engine.advance(store.row, inline());
+
+    expect(result.state).toBe(S.SUCCESS);
+    expect(trail(store)).toContain('CREDIT_SENT->CREDITED');
+    expect(store.events.find((e) => e.to === S.CREDITED)?.reason).toBe('CREDIT_CONFIRMED_BY_RESOLVE');
+    expect(downstream.callsTo('ReverseDebit')).toHaveLength(0);
+  });
+
+  it('no answer from Resolve: stays in DEBIT_SENT and yields, never fails an unfenced reference', async () => {
+    const { engine, store, inline, downstream, observer } = setup();
+    downstream.script('Debit', insufficient()).script('Resolve:DEBIT', unavailable(), unavailable(), unavailable());
+    const result = await engine.advance(store.row, inline());
+
+    expect(result.state).toBe(S.DEBIT_SENT);
+    expect(result.failureCode).toBeNull();
+    expect(store.yields).toBe(1);
+    expect(trail(store)).toEqual(['INITIATED->DEBIT_SENT']);
+    expect(observer.terminals).toHaveLength(0);
+  });
+
+  it('a credit refusal with no answer from Resolve stays in CREDIT_SENT: no refund yet', async () => {
+    const { engine, store, inline, downstream } = setup();
+    downstream
+      .script('Credit', fail(Status.NOT_FOUND, 'ACCOUNT_NOT_FOUND'))
+      .script('Resolve:CREDIT', deadline(), deadline(), deadline());
+    const result = await engine.advance(store.row, inline());
+
+    expect(result.state).toBe(S.CREDIT_SENT);
+    expect(downstream.callsTo('ReverseDebit')).toHaveLength(0);
+    expect(store.yields).toBe(1);
+  });
+
+  it('a bug from Resolve, or an answer that is neither APPLIED nor VOIDED, goes to manual review', async () => {
+    const bug = setup();
+    bug.downstream
+      .script('Debit', insufficient())
+      .script('Resolve:DEBIT', fail(Status.INVALID_ARGUMENT, 'INVALID_REQUEST'));
+    expect((await bug.engine.advance(bug.store.row, bug.inline())).state).toBe(S.NEEDS_MANUAL_REVIEW);
+
+    const invalid = setup();
+    invalid.downstream.script('Debit', insufficient()).script('Resolve:DEBIT', { resolved: 'INVALID' });
+    const result = await invalid.engine.advance(invalid.store.row, invalid.inline());
+    expect(result.state).toBe(S.NEEDS_MANUAL_REVIEW);
+    expect(result.failureCode).toBe(FailureCode.BANK_INVARIANT_VIOLATION);
+  });
+
+  it('recovery fences the same way as an inline drive', async () => {
+    const { engine, store, recovery, downstream } = setup({ transfer: { state: S.DEBIT_SENT, version: 2 } });
+    downstream.script('Debit', insufficient()).script('Resolve:DEBIT', { resolved: 'VOIDED' });
+    const result = await engine.advance(store.row, recovery);
+    expect(result.state).toBe(S.FAILED);
+    expect(downstream.callsTo('Resolve:DEBIT')).toHaveLength(1);
   });
 });
 

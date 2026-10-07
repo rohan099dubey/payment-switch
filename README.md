@@ -198,13 +198,13 @@ exercises each scenario.
 
 | # | Scenario | Outcome | Exercised by |
 |---|---|---|---|
-| 1–2 | Insufficient funds, or the payer account is missing or blocked | `FAILED` with the matching code, nothing to undo | `orchestrator.test.ts`, `failurePaths.test.ts` |
+| 1–2 | Insufficient funds, or the payer account is missing or blocked | Fenced with `Resolve` first, then `FAILED` with the matching code; nothing to undo ([ADR-024](docs/decisions/ADR-024-fence-definite-failures.md)) | `orchestrator.test.ts`, `failurePaths.test.ts` |
 | 3 | Debit outcome unknown (timeout, `UNAVAILABLE`) | Retried inline, then by recovery; after 3 attempts `Resolve` decides | `idempotency.test.ts`, `failurePaths.test.ts` (bank down) |
 | 4 | Debit applied but the response lost | The retry returns the original `APPLIED`; one debit only | `failurePaths.test.ts` (`lost_response_rate = 1`) |
-| 5 | A debit arrives late, after the switch gave up | The `Resolve` tombstone makes it fail with `REFERENCE_VOIDED`; it never applies | `failurePaths.test.ts` (`late_apply_rate = 1`), `mockBank.test.ts` |
+| 5 | A debit or credit arrives late, after the switch gave up or after the bank refused a retry | The `Resolve` tombstone makes it fail with `REFERENCE_VOIDED`; it never applies | `failurePaths.test.ts` (`late_apply_rate = 1`, "fenced against a late request"), `mockBank.test.ts` |
 | 6, 10 | Orchestrator crashes in `DEBIT_SENT` or `CREDIT_SENT` | The lease expires; another instance repeats the idempotent step and finishes | `failurePaths.test.ts`, `crashRecovery.test.ts` |
 | 7 | Ledger down after a successful bank debit | Stays `DEBIT_SENT`, retried with backoff; completes when the Ledger returns | `failurePaths.test.ts` |
-| 8 | Payee account missing or blocked | `REVERSING`: refund the payer, post the reversal journal, `REVERSED` | `orchestrator.test.ts`, `failurePaths.test.ts` |
+| 8 | Payee account missing or blocked | Fenced with `Resolve`, then `REVERSING`: refund the payer, post the reversal journal, `REVERSED` | `orchestrator.test.ts`, `failurePaths.test.ts` |
 | 9 | Credit outcome unknown after retries | `Resolve` on the payee bank: `APPLIED` continues, `VOIDED` reverses | `recovery/worker.test.ts`, the invariant test |
 | 11 | `ReverseDebit` fails transiently | Stays `REVERSING`, retried until it works; never voided | `recovery/worker.test.ts` |
 | 12 | Client retries while the first request is still running | Returns the latest state; no second saga | `idempotency.test.ts` |
@@ -214,7 +214,9 @@ exercises each scenario.
 The distinction everything rests on: **a timeout is not a failure.** It is an unknown
 outcome, settled by the bank's `Resolve` call. `Resolve` writes a tombstone, so a late
 request can never apply after the transfer was given up on
-([ADR-002](docs/decisions/ADR-002-resolve-tombstones.md)).
+([ADR-002](docs/decisions/ADR-002-resolve-tombstones.md)). Even a definite refusal is
+fenced the same way before the switch acts on it, because an earlier attempt for the
+same reference may still be on its way ([ADR-024](docs/decisions/ADR-024-fence-definite-failures.md)).
 
 ## 6. Benchmarks
 
@@ -276,6 +278,7 @@ Where the implementation fills a gap in the specification or deviates from it:
 | [021](docs/decisions/ADR-021-chaos-and-invariant-checks.md) | How the chaos tests and the invariant checker scope their checks |
 | [022](docs/decisions/ADR-022-load-test-details.md) | Load test and seed details |
 | [023](docs/decisions/ADR-023-m9-polish-details.md) | CI job layout, diagram rendering, readiness probes in `repo/` |
+| [024](docs/decisions/ADR-024-fence-definite-failures.md) | A definite bank refusal is fenced with `Resolve` before the failure branch (found by the first nightly CI run) |
 
 ## 8. What I built and why
 
@@ -349,4 +352,4 @@ Five lines after each milestone, each one explainable out loud without notes.
 2. CI has three layers: static checks on every push, then the real Docker stack running the integration suite and a 1,000-transfer chaos run, and every night the full 10,000-transfer test twice with different seeds, so the headline result is re-proven rather than claimed once.
 3. The five diagrams are rendered from Mermaid source kept in the repo. Rendering them caught a real defect: `#` starts a comment in a Mermaid name, which silently merged the two Orchestrator instances in the crash-recovery diagram.
 4. The readiness checks' `SELECT 1` moved into each service's `repo/` layer, so "SQL lives only in `repo/`" now has no exceptions, and a search of the source confirms it.
-5. Done means observed: each definition-of-done box was ticked only after its check ran. The one that needs GitHub Actions is reported as unverified, not ticked, because the repository has no remote yet.
+5. The first nightly CI run found a real exactly-once bug the spec itself allowed: a debit that timed out applied *after* a retry was refused for insufficient funds and the transfer had failed. Now every refusal is fenced with the bank's `Resolve` before the switch acts on it (ADR-024), proven red then green by tests that replay the late request.
