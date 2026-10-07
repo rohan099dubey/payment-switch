@@ -21,7 +21,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | M8 | Load & metrics | `DONE` | 16, 17 | 2026-10-06 | see `git log --grep "M8"` |
 | M9 | Polish | `DONE` | 17, 20 | 2026-10-07 | see `git log --grep "M9"` |
 | P2-1 | Transactional outbox & Kafka (phase 2, §19 item 1) | `DONE` | 6, 19 (+ ADR-025) | 2026-10-07 | see `git log --grep "P2-1"` |
-| P2-2 | Notification service (phase 2, §19 item 2) | `IN_PROGRESS` | 19 (+ ADR-025, ADR-026) | — | — |
+| P2-2 | Notification service (phase 2, §19 item 2) | `DONE` | 19 (+ ADR-025, ADR-026) | 2026-10-07 | see `git log --grep "P2-2"` |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -377,4 +377,4 @@ Acceptance
 - [x] Full integration suite green: 200/200 in 12 files (two harness fixes on the way, both in the ADR-021 amendment: the `GetBalance` test waits for a quiet stack, and the test HTTP client retries a request with no HTTP response)
 - [x] The 10,000-transfer test passes twice with different seeds, with **I8 and I9** holding (seed 1: 9,467 / 519 / 14; seed 2: 9,403 / 523 / 74; I1–I9, 0 manual review; I9 10,000 of 10,000 delivered each run; crash recovery passes in both with I8 and I9. In seed 1 one verification read hit the Docker Desktop reset and `readQuery` retried it, as designed)
 - [x] `npm run invariants` (I1–I6, I8, I9) green after the runs (`--since 2026-10-07T11:53:36Z`: 20,484 transfers, all hold; I9 20,483 delivered, 1 dead-lettered, the integration test's `whfail-` payee)
-- [ ] CI green on GitHub
+- [x] CI green on GitHub: PR rohan099dubey/payment-switch#2 (`static`, `integration`); `nightly` run 37620676547 (seeds 1 and 2: I9 10,000 of 10,000 delivered each; unscoped invariants on the fresh CI stack: 20,400 transfers, I1–I9 hold)
