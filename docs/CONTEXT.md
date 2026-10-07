@@ -16,10 +16,10 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **P2-3 — Reconciliation service** (phase 2, §19 item 3), branch `claude/p2-3-reconciliation`. Phase 1, P2-1 and P2-2 are `DONE` |
+| **Active milestone** | **P2-3** waiting for CI (PR #3) and **P2-4** (branch `claude/p2-4-observability`, stacked on P2-3) open: tracing-cost row and CI. Phase 1, P2-1 and P2-2 are `DONE` |
 | **Definition of done** | **8 of 8 — phase 1 complete** (2026-10-07; the last box confirmed by the owner) |
 | **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. All three jobs green on `c5a82c1`. The first `nightly` found a real bug, fixed in ADR-024 |
-| **Next action** | See `docs/PROGRESS.md`, section P2-3. Then P2-4, tracing and dashboards (§19 item 4): OpenTelemetry to Jaeger, Prometheus, Grafana with committed dashboards |
+| **Next action** | Read the **last SESSION_LOG entry** ("Session 3 (end)"): its numbered next actions are the plan. Then P2-5 (ledger snapshots), P2-6 (k8s, optional) |
 | **Read first for phase 2** | `ARCHITECTURE.md` section 19 (each item is independent), plus `ADR-025` for how events look on the wire |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
@@ -49,6 +49,10 @@ speaks HTTP to the outside; everything internal is gRPC.
 | Reconciliation | gRPC 50053, HTTP 9104 | `reconciliation_db` on `postgres-reconciliation`: `reconciliation_runs`, `reconciliation_breaks` | both banks (`GetStatement`, `GetOperation`), Ledger (`ListJournalsByTime`, `ListJournals`) |
 | Mock Bank A | gRPC 50061, HTTP 9111 | db `bank_a` | nothing |
 | Mock Bank B | gRPC 50062, HTTP 9112 | db `bank_b` | nothing |
+
+Observability (ADR-028): Jaeger 16686 (traces), Prometheus 9090 (scrapes all 7 services),
+Grafana 3000 (dashboard `payment-switch`, committed JSON in `observability/`). Every service
+imports `@switch/common/tracing` **first** in `main.ts`.
 
 Kafka (`apache/kafka:3.9.1`, KRaft, single node; `kafka:9092` inside Compose, `localhost:9094`
 from the host) carries topic `transfer-events` (phase 2, ADR-025). It is **not** on the
@@ -169,6 +173,7 @@ Computed against a baseline snapshot taken before each run.
 | Outbox: an event for **every** terminal state (incl. `NEEDS_MANUAL_REVIEW`), `UNIQUE (aggregate_id)`, amount as a string, **Kafka 3.9.1** (kafkajs predates 4.x), no `depends_on` Kafka, relay metrics, invariant I8 | `ADR-025` |
 | Notification: a dedicated `postgres-notification`, a deterministic simulated webhook (`whfail-` / `whflaky-` payees, a seeded rate), blocking retries 200·2^n ms, a dead letter for malformed messages, invariant I9 | `ADR-026` |
 | Reconciliation: **added** `LedgerService.ListJournalsByTime` and `ReconciliationService.RunReconciliation`; paged `GetStatement` (page_size, page_token); a 120 s settle lag; breaks OPEN to RESOLVED; dedicated `postgres-reconciliation`; invariant I10 | `ADR-027` |
+| Tracing: the OTel bootstrap is the first import in every `main.ts`; `pg` spans only inside requests; always-on sampling (its cost is a separate benchmark row); new top-level `observability/` | `ADR-028` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
 

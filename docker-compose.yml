@@ -143,6 +143,8 @@ services:
       args:
         SERVICE: ledger
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: ledger
       LOG_LEVEL: info
       GRPC_PORT: '50052'
       HTTP_PORT: '9102'
@@ -168,6 +170,8 @@ services:
       args:
         SERVICE: notification
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: notification
       LOG_LEVEL: info
       HTTP_PORT: '9103'
       DATABASE_URL: postgres://notification:notification@postgres-notification:5432/notification_db
@@ -197,6 +201,8 @@ services:
       args:
         SERVICE: reconciliation
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: reconciliation
       LOG_LEVEL: info
       GRPC_PORT: '50053'
       HTTP_PORT: '9104'
@@ -225,6 +231,54 @@ services:
       timeout: 3s
       retries: 10
 
+  # Phase 2, item 4 (ARCHITECTURE.md section 19, ADR-028): traces, metrics, dashboards.
+  # Nothing depends on these: span export is asynchronous, and a dead Jaeger drops spans,
+  # not payments.
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    ports:
+      - '16686:16686' # UI and query API
+      - '4318:4318' # OTLP over HTTP
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:13133/status']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  prometheus:
+    image: prom/prometheus:v3.7.0
+    command: ['--config.file=/etc/prometheus/prometheus.yml', '--storage.tsdb.retention.time=2d']
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - '9090:9090'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:9090/-/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    environment:
+      # Development only: anonymous viewers, a throwaway admin password.
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: dev-only-grafana-admin
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - '3000:3000'
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/api/health']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
   # One codebase, two instances. Each owns one database on postgres-banks.
   bank-a:
     build:
@@ -232,6 +286,8 @@ services:
       args:
         SERVICE: mockBank
     environment: &bank-chaos-defaults
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: bank-a
       LOG_LEVEL: info
       BANK_ID: bank_a
       GRPC_PORT: '50061'
@@ -264,6 +320,7 @@ services:
         SERVICE: mockBank
     environment:
       <<: *bank-chaos-defaults
+      OTEL_SERVICE_NAME: bank-b
       BANK_ID: bank_b
       GRPC_PORT: '50062'
       HTTP_PORT: '9112'
@@ -286,6 +343,8 @@ services:
       args:
         SERVICE: orchestrator
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: orchestrator
       LOG_LEVEL: info
       GRPC_PORT: '50051'
       HTTP_PORT: '9101'
@@ -334,6 +393,8 @@ services:
       args:
         SERVICE: gateway
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: gateway
       LOG_LEVEL: info
       HTTP_PORT: '8080'
       JWT_SECRET: dev-only-jwt-secret-change-me-0123456789abcdef

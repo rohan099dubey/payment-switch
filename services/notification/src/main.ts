@@ -1,3 +1,5 @@
+// First import: tracing must hook gRPC, http and pg before they load (ADR-028).
+import { shutdownTracing } from '@switch/common/tracing';
 import path from 'node:path';
 import { createLogger, createPool, runMigrations, sleep, startHealthServer } from '@switch/common';
 import { Registry } from 'prom-client';
@@ -82,6 +84,7 @@ async function main(): Promise<void> {
       await deadLetters.close();
       await health.close();
       await pool.end();
+      await shutdownTracing();
       clearTimeout(timer);
       logger.info('notification service stopped');
       process.exit(0);

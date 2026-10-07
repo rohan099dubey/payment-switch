@@ -9,7 +9,13 @@ export default defineConfig({
         test: {
           name: 'unit',
           // tests/helpers/*.test.ts: pure checks of the invariant library, no I/O.
-          include: ['packages/*/test/**/*.test.ts', 'services/*/test/**/*.test.ts', 'tests/helpers/**/*.test.ts'],
+          include: [
+            'packages/*/test/**/*.test.ts',
+            'services/*/test/**/*.test.ts',
+            'tests/helpers/**/*.test.ts',
+            // ADR-028: checks of committed config (the Grafana dashboard); they only read files.
+            'tests/unit/**/*.test.ts',
+          ],
         },
       },
       // Integration and chaos tests share one live stack and assert on balance deltas,

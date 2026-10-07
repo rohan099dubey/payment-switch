@@ -1,3 +1,5 @@
+// First import: tracing must hook gRPC, http and pg before they load (ADR-028).
+import { shutdownTracing } from '@switch/common/tracing';
 import path from 'node:path';
 import { createInstrument, createLogger, createPool, runMigrations, startHealthServer } from '@switch/common';
 import { Registry } from 'prom-client';
@@ -139,6 +141,7 @@ async function main(): Promise<void> {
       banks.close();
       ledger.close();
       await pool.end();
+      await shutdownTracing();
       logger.info('orchestrator stopped');
       process.exit(0);
     })().catch((err: unknown) => {

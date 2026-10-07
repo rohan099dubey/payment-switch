@@ -1,0 +1,10 @@
+# ADR-028: dashboards are committed JSON, provisioned read-only.
+apiVersion: 1
+providers:
+  - name: payment-switch
+    folder: Payment switch
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

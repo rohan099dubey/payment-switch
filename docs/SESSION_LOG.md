@@ -1302,3 +1302,59 @@ unscoped checker: I10 flags the same 2 transfers as I4/I5 (two independent views
 - P2-3 PR, CI with `nightly`, merge; then P2-4 tracing and dashboards (§19 item 4):
   OpenTelemetry 0.223 (sdk-node, OTLP proto, gRPC/HTTP/pg instrumentation) to Jaeger 2.11,
   Prometheus 3.7, Grafana 12.2 with committed dashboard JSON.
+
+---
+
+## 2026-10-07 — Session 3 (end) — P2-4 Tracing & dashboards; handoff (context full)
+
+**Status at end:** Phase 1 `DONE`. P2-1 and P2-2 `DONE` and merged (`main` = `c27e782`).
+**P2-3** is complete locally; PR rohan099dubey/payment-switch#3 had static and integration
+green with `nightly` (run 37624914860) still pending at handoff. **P2-4** is implemented and
+verified locally on branch `claude/p2-4-observability` (stacked on P2-3); only the tracing
+cost row and CI are open.
+
+**Done (P2-4)**
+- `@switch/common/tracing` (subpath export; first import in all 6 `main.ts`); gRPC, HTTP
+  (no probes) and `pg` (`requireParentSpan`); OTLP/HTTP to Jaeger; flushed on SIGTERM.
+- Compose: Jaeger 2.11.0 (16686, 4318), Prometheus v3.7.0 (9090, 7 jobs), Grafana 12.2.0
+  (3000, provisioned, read-only). `observability/` holds the config and the dashboard (15 panels).
+- `tests/unit/dashboards.test.ts` (vitest unit project now includes `tests/unit/**`) and
+  `tests/integration/observability.test.ts`. ADR-028.
+
+**Results (measured)**
+```text
+one transfer = one trace: 64 spans across gateway, orchestrator, bank-a, bank-b, ledger (+ pg)
+unit: dashboard tests 4/4 (misspelt-metric mutant caught); observability.test 4/4
+integration 216/216 (14 files), tracing on
+10,000 transfers, seed 1: 9,471 / 519 / 10; seed 2: 9,400 / 526 / 74; I1-I10; 0 manual review
+npm run invariants -- --since 2026-10-07T13:10:06Z -> 20,453 transfers, all hold
+k6 75/s 2m, commit 3f41d87 + P2-4 working tree, TRACING ON:
+  74.76 it/s, 12 dropped, p50 114.2 ms, p95 486.1 ms, p99 849.7 ms, errors 0.00% (0/8,992);
+  invariants --since 13:24:44Z: 8,988 transfers, I1-I10 hold; docker stats @60 s: orchestrator 85 %
+k6 75/s 2m, same build, TRACING OFF (OTEL_SDK_DISABLED via a scratchpad override, services recreated):
+  72.91 it/s, 241 dropped, p50 113.9 ms, p95 3.7 s, p99 4.88 s, errors 0.00% (0/8,763);
+  invariants --since 13:28:00Z: 8,759 transfers, I1-I10 hold;
+  docker stats @60 s: orchestrator 106 %, postgres-orchestrator 191 %
+```
+**The A/B is inconclusive and NOT recorded in benchmarks.md.** Tracing off cannot plausibly
+be 7x slower than tracing on. The off run followed a container recreate, and Postgres for the
+Orchestrator was at 191 %; the cause is not yet known (a cold cache? the size of `outbox` or
+`transfers`, now about 110k rows? the relay's count query?). Both are true measurements of
+those runs, but the difference is not tracing's cost.
+
+**Next actions (in order)**
+1. PR #3 (P2-3): check `nightly` 37624914860. If green, tick P2-3's CI box and mark it `DONE`
+   in a temporary worktree of `claude/p2-3-reconciliation` (as done for P2-1 and P2-2),
+   fast-forward `main`, run the checks in the main checkout, push `main`.
+2. P2-4: rebase or fast-forward onto the new `main`, and redo the tracing A/B properly: the
+   same build, warm up both ways, alternate off/on/off/on, 2 runs each, the same stack state;
+   investigate `postgres-orchestrator` CPU if it recurs. Record a row only if it is
+   explainable, then open the PR (with a manual `nightly`), CI, merge.
+3. P2-5 ledger balance snapshots (§19 item 5): periodic snapshot rows so `GetBalance` reads
+   only entries after the latest snapshot; append-only stays intact.
+4. P2-6 Kubernetes manifests (optional in the spec).
+
+**Gotchas**
+- Jaeger's batch export lags a few seconds: a trace query right after a request can be empty.
+- Without `requireParentSpan`, the 1 s pollers fill Jaeger with root `pg` traces.
+- The dev stack still holds the 2 red-test transfers (I4/I5/I10 unscoped); use `--since`.
