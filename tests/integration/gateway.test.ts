@@ -74,7 +74,12 @@ describe('rate limiting through the Gateway', () => {
       const failOpenBefore = await metric('rate_limit_fail_open_total');
 
       const started = Date.now();
-      const results = await Promise.all(Array.from({ length: 450 }, () => client.getTransfer(randomUUID())));
+      // 450 requests over 16 keep-alive connections: they arrive as fast as the Gateway
+      // answers, not as fast as Docker accepts new connections (ADR-019, amendment 2).
+      const results = await client.getTransfersOverPool(
+        Array.from({ length: 450 }, () => randomUUID()),
+        16,
+      );
       const elapsedS = (Date.now() - started) / 1000;
 
       const limited = results.filter((r) => r.status === 429);

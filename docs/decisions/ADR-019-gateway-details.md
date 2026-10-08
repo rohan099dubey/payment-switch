@@ -56,3 +56,22 @@ bounds a Redis that is connected but not answering, a rare case where one second
 extra latency is acceptable. The burst test now also requires that
 `rate_limit_fail_open_total` does not move while Redis is healthy.
 
+
+## Amendment 2 (2026-10-08): the burst test sends over keep-alive connections
+
+The first CI run of P2-4 (run 37753293818) failed the burst test again, differently: all
+450 requests were answered `404`, none `429`, because they reached the Gateway over 5.2 s.
+The test needs more than 200 + 100·t requests to arrive within t seconds, so the whole
+burst must land in under 2.5 s. P2-3's green run had taken 2.44 s: the margin was 0.06 s.
+The limiter was right every time. The test's sender was the bottleneck: each request opened
+a new TCP connection, and Docker's published-port proxy accepts new connections slowly (on
+Docker Desktop for Windows some never arrive and are retried 20 s later; a local run took
+20 s and failed the same way). P2-4's tracing, Jaeger, Prometheus and Grafana add load to
+the CI runner, which tipped the balance.
+
+Decision: the burst goes over 16 keep-alive connections
+(`GatewayClient.getTransfersOverPool`), so requests arrive as fast as the Gateway answers.
+Every assertion is unchanged: some `429 RATE_LIMITED` with `Retry-After` and
+`X-RateLimit-Remaining: 0`, at most 200 + 100·t + 5 admitted, the rejection counter
+matching, and no fail-open. Locally the burst now takes 0.5–0.8 s (241 admitted, 209
+limited in one run). The burst helper does not retry: a lost request fails the test.

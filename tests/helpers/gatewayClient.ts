@@ -2,6 +2,8 @@
  * HTTP client for the Gateway, as an API client would use it: client credentials for a
  * cached token, then `createTransfer(body, key)` and `getTransfer(id)` (section 16).
  */
+import http from 'node:http';
+
 export const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
 
 /** Development credentials from docker-compose.yml (never used outside the local stack). */
@@ -112,6 +114,59 @@ export class GatewayClient {
       authorization: `Bearer ${await this.accessToken()}`,
       ...headers,
     });
+  }
+
+  /**
+   * `GET /v1/transfers/{id}` for every id at once, over at most `connections` keep-alive
+   * connections. A burst test needs the requests to reach the Gateway faster than its
+   * bucket refills. One new connection per request makes the arrival rate depend on how
+   * fast Docker's published-port proxy accepts connections, which on Docker Desktop and on
+   * a CI runner is slow enough to let the bucket keep up (ADR-019, amendment 2). No retry:
+   * a burst that loses a request fails the test instead.
+   */
+  async getTransfersOverPool(ids: readonly string[], connections: number): Promise<HttpResult[]> {
+    const authorization = `Bearer ${await this.accessToken()}`;
+    const agent = new http.Agent({ keepAlive: true, maxSockets: connections });
+    const url = new URL(GATEWAY_URL);
+    const one = (id: string): Promise<HttpResult> =>
+      new Promise((resolve, reject) => {
+        const req = http.request(
+          {
+            agent,
+            host: url.hostname,
+            port: url.port,
+            method: 'GET',
+            path: `/v1/transfers/${encodeURIComponent(id)}`,
+            headers: { authorization },
+            timeout: REQUEST_TIMEOUT_MS,
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (chunk: Buffer) => chunks.push(chunk));
+            res.on('end', () => {
+              const headers = new Headers();
+              for (const [name, value] of Object.entries(res.headers)) {
+                if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(', ') : value);
+              }
+              const text = Buffer.concat(chunks).toString('utf8');
+              resolve({
+                status: res.statusCode ?? 0,
+                headers,
+                body: (text === '' ? null : JSON.parse(text)) as Record<string, unknown>,
+              });
+            });
+            res.on('error', reject);
+          },
+        );
+        req.on('timeout', () => req.destroy(new Error(`no response within ${REQUEST_TIMEOUT_MS} ms`)));
+        req.on('error', reject);
+        req.end();
+      });
+    try {
+      return await Promise.all(ids.map(one));
+    } finally {
+      agent.destroy();
+    }
   }
 }
 
