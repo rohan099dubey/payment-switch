@@ -1,0 +1,146 @@
+# The Ledger (section 7): append-only double-entry journals. A leaf: it calls nothing.
+# Two replicas: journal idempotency is the database's UNIQUE key, not process state.
+# Mirrors docker-compose.yml service `ledger` (tests/unit/k8sManifests.test.ts checks every
+# variable). Waits for the same dependencies as its Compose depends_on, with init containers.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ledger
+  labels:
+    app.kubernetes.io/name: ledger
+    app.kubernetes.io/part-of: payment-switch
+data:
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  OTEL_SERVICE_NAME: ledger
+  LOG_LEVEL: info
+  GRPC_PORT: '50052'
+  HTTP_PORT: '9102'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ledger
+  labels:
+    app.kubernetes.io/name: ledger
+    app.kubernetes.io/part-of: payment-switch
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://ledger:ledger@postgres-ledger:5432/ledger_db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger
+  labels:
+    app.kubernetes.io/name: ledger
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  selector:
+    app.kubernetes.io/name: ledger
+  ports:
+    - name: grpc
+      port: 50052
+      targetPort: grpc
+      appProtocol: grpc
+    - name: http
+      port: 9102
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger
+  labels:
+    app.kubernetes.io/name: ledger
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ledger
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ledger
+        app.kubernetes.io/part-of: payment-switch
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        # The image's own `node` user.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres-ledger
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          command:
+            [
+              'sh',
+              '-c',
+              'until nc -z -w 2 postgres-ledger 5432; do echo waiting for postgres-ledger:5432; sleep 2; done',
+            ]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+      containers:
+        - name: ledger
+          # One image for every service (the repository Dockerfile); SERVICE picks the entry point.
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: ledger
+            - secretRef:
+                name: ledger
+          env:
+            - name: SERVICE
+              value: ledger
+          ports:
+            - name: grpc
+              containerPort: 50052
+            - name: http
+              containerPort: 9102
+          # /healthz answers once migrations have run and the servers listen.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']

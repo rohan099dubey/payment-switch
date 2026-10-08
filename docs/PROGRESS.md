@@ -24,6 +24,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | P2-2 | Notification service (phase 2, §19 item 2) | `DONE` | 19 (+ ADR-025, ADR-026) | 2026-10-07 | see `git log --grep "P2-2"` |
 | P2-3 | Reconciliation service (phase 2, §19 item 3) | `DONE` | 7, 8, 9, 19 (+ ADR-027) | 2026-10-07 | see `git log --grep "P2-3"` |
 | P2-4 | Tracing & dashboards (phase 2, §19 item 4) | `DONE` | 17, 19 (+ ADR-028) | 2026-10-08 | see `git log --grep "P2-4"` |
+| P2-6 | Kubernetes manifests (phase 2, §19 item 6, optional) | `IN_PROGRESS` (all boxes ticked; merges after P2-4) | 15, 19 (+ ADR-030) | | see `git log --grep "P2-6"` |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -436,3 +437,27 @@ Acceptance
 - [x] `npm run invariants` green after the runs (`--since 2026-10-07T13:10:06Z`: 20,453 transfers, I1–I6 and I8–I10 hold)
 - [x] The cost of tracing measured with k6 and recorded in `docs/benchmarks.md` ("Tracing cost"): 4 rows at 50/s, alternating off / on / off / on after recreate, `VACUUM ANALYZE` and a 90 s warm-up, 0 errors, invariants green after each. Tracing adds **+26 % CPU per transfer** (19.6 to 24.8 ms across the services; Orchestrator 10.0 to 12.5 ms) and about **+8 ms p50**. The earlier confounded pair is explained: cold start after a recreate
 - [x] CI green on GitHub: PR rohan099dubey/payment-switch#5 (`static`, `integration` on `7530c57`; the first runs failed the Gateway burst test, a test that was borderline by design, fixed in ADR-019 amendment 2); `nightly` run 37776725804 (seed 1: 9,469 / 519 / 12; seed 2: 9,407 / 525 / 68; tracing on; unscoped invariants on the fresh CI stack: 20,108 transfers, I1–I10 hold)
+
+## P2-6 — Kubernetes manifests (phase 2, §19 item 6, optional)
+
+**Scope:** manifests for `kind` or `minikube`. Started 2026-10-08 on the owner's go-ahead,
+in parallel with P2-4/P2-5 (another session). Interpretations and additions: `ADR-030`.
+
+Implementation
+- [x] `deploy/k8s` (kustomize): a namespace, a ConfigMap and a Secret per service, five Postgres StatefulSets, Redis, a KRaft Kafka StatefulSet, seven Deployments; init containers mirror Compose `depends_on`; `/healthz` and `/readyz` probes; requests and limits; non-root, read-only root filesystem
+- [x] Two Orchestrators (pod name = `INSTANCE_ID`), two Gateways, two Ledgers; one of each bank, Notification, Reconciliation
+- [x] Network policies: deny all ingress, then each Postgres only from its owner (ADR-007), Redis, Kafka and gRPC only from their callers
+- [x] `deploy/kind/cluster.yaml` (node image pinned by digest; Gateway NodePort 30080 on 127.0.0.1); `npm run k8s:up` / `k8s:down` (`scripts/k8s.ts`)
+- [x] `tests/unit/k8sManifests.test.ts`: parity with `docker-compose.yml` (every variable, value for value; ports; probes; depends_on; `initBankDbs.sql`), resources, hardening, network-policy edges derived from each `DATABASE_URL`
+- [x] Vitest project `k8s` (`npm run test:k8s`): port-forwards to non-Compose ports, the existing helpers pointed at the cluster through their environment variables
+- [x] CI job `k8s` (pull requests, schedule, dispatch): kind v0.33.0 with a verified checksum
+- [x] P2-4 mirrored after rebasing onto it: OTEL variables in every service; Jaeger, Prometheus, Grafana; their config files come from `observability/` through kustomize `configMapGenerator`s (one copy; `initBankDbs.sql` too); Prometheus discovers each pod through the Kubernetes API (`deploy/k8s/prometheus.yml`, a read-only Role); network policies for OTLP, Grafana's reads
+
+Acceptance
+- [x] Unit: the parity test passes (66 tests), and mutants (a changed value, a dropped variable, a wrong wait, a database opened to a foreign service, a `:latest` image, drifted init SQL) each fail it
+- [x] `npm run k8s:up` on a fresh kind cluster: every rollout completes with no manual step (2 min 51 s: 17 pods ready, 0 restarts). Re-run on the existing cluster (rebuild, load, rolling restart): 1 min 34 s
+- [x] `npm run test:k8s` green (5/5, twice): all pods ready; a foreign database unreachable and its own reachable; SUCCESS / replay / FAILED / REVERSED through the NodePort; the Orchestrator holding all 200 leases SIGKILLed mid-flight: 200 × `503`, **200 of 200 finished by recovery on another instance**, I1–I10 hold; unscoped `npm run invariants` green (406, then 609 transfers). Red check: with the network policies deleted the isolation test fails, restored it passes. The first run exposed a test gap, not a system bug: `kubectl delete --force` is not a crash (see SESSION_LOG)
+- [x] `npm run lint && npm run typecheck && npm test` green (unit 736/736, 37 files; after the P2-4 rebase 781/781, 38 files)
+- [x] After the P2-4 rebase: the parity test failed first (no `jaeger` workload), as designed; with the stack mirrored it passes (106 tests) and 7 more mutants fail it (Jaeger args, an unmounted dashboard, a missing scrape job, Jaeger refusing a service's spans, a drifted Kafka health check, a wrong `OTEL_SERVICE_NAME`, init SQL from the wrong file). Fresh cluster: 4 min 4 s, 20 pods ready, 0 restarts. `test:k8s` 9/9 three times: also every pod a healthy Prometheus target (10 targets, 7 jobs), every dashboard query runs, Grafana serves the dashboard, one transfer is one trace across the 5 services; crash 200/200 finished by another instance, I1–I10
+- [x] CI green on GitHub, including the new `k8s` job: PR rohan099dubey/payment-switch#4, run 37761743256 on `d768a8e` (`static`, `integration`, `k8s` 4 min 35 s). The first run's `k8s` failed: 2-CPU runner, CPU requests too large, three Postgres pods unschedulable. Fixed in `d768a8e` with a budget unit test
+

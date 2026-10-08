@@ -1,0 +1,231 @@
+# The Orchestrator (section 6). Two replicas on purpose: recovery claims transfers with
+# leases and FOR UPDATE SKIP LOCKED, the outbox relay with SKIP LOCKED, and every state
+# change is a compare-and-set on version, so instances never need to know about each
+# other. INSTANCE_ID is the pod name (the lease owner in transfer_events).
+# Like Compose, it does not wait for Kafka: events wait in the outbox (ADR-025).
+# Mirrors docker-compose.yml service `orchestrator` (tests/unit/k8sManifests.test.ts checks every
+# variable). Waits for the same dependencies as its Compose depends_on, with init containers.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orchestrator
+  labels:
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/part-of: payment-switch
+data:
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  OTEL_SERVICE_NAME: orchestrator
+  LOG_LEVEL: info
+  GRPC_PORT: '50051'
+  HTTP_PORT: '9101'
+  BANK_ENDPOINTS: 'bank_a=bank-a:50061,bank_b=bank-b:50062'
+  LEDGER_ADDR: ledger:50052
+  MAX_TRANSFER_AMOUNT: '10000000'
+  BANK_CALL_TIMEOUT_MS: '2000'
+  LEDGER_CALL_TIMEOUT_MS: '2000'
+  INLINE_BANK_RETRIES: '2'
+  INLINE_LEDGER_RETRIES: '2'
+  SAGA_INLINE_BUDGET_MS: '8000'
+  ORCHESTRATOR_TIMEOUT_MS: '10000'
+  REPLAY_WAIT_MS: '2000'
+  LEASE_MS: '15000'
+  RECOVERY_POLL_MS: '1000'
+  RECOVERY_BATCH: '20'
+  RECOVERY_CONCURRENCY: '5'
+  RESOLVE_AFTER_ATTEMPTS: '3'
+  MAX_RECOVERY_ATTEMPTS: '20'
+  KAFKA_BROKERS: kafka:9092
+  OUTBOX_POLL_MS: '500'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orchestrator
+  labels:
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/part-of: payment-switch
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://orch:orch@postgres-orchestrator:5432/orchestrator_db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator
+  labels:
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  selector:
+    app.kubernetes.io/name: orchestrator
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+      appProtocol: grpc
+    - name: http
+      port: 9101
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  labels:
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orchestrator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orchestrator
+        app.kubernetes.io/part-of: payment-switch
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        # The image's own `node` user.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres-orchestrator
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          command:
+            [
+              'sh',
+              '-c',
+              'until nc -z -w 2 postgres-orchestrator 5432; do echo waiting for postgres-orchestrator:5432; sleep 2; done',
+            ]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+        - name: wait-for-ledger
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          command:
+            [
+              'sh',
+              '-c',
+              'until wget -q -O /dev/null -T 2 http://ledger:9102/readyz; do echo waiting for ledger ready; sleep 2; done',
+            ]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+        - name: wait-for-bank-a
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          command:
+            [
+              'sh',
+              '-c',
+              'until wget -q -O /dev/null -T 2 http://bank-a:9111/readyz; do echo waiting for bank-a ready; sleep 2; done',
+            ]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+        - name: wait-for-bank-b
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          command:
+            [
+              'sh',
+              '-c',
+              'until wget -q -O /dev/null -T 2 http://bank-b:9112/readyz; do echo waiting for bank-b ready; sleep 2; done',
+            ]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+      containers:
+        - name: orchestrator
+          # One image for every service (the repository Dockerfile); SERVICE picks the entry point.
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: orchestrator
+            - secretRef:
+                name: orchestrator
+          env:
+            - name: SERVICE
+              value: orchestrator
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: http
+              containerPort: 9101
+          # /healthz answers once migrations have run and the servers listen.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']

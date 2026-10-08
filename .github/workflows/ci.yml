@@ -3,6 +3,8 @@
 #   integration  needs static; the real Compose stack, the integration suite, then the
 #                1,000-transfer chaos run
 #   nightly      schedule and workflow_dispatch; the full 10,000-transfer chaos run
+#   k8s          phase 2, item 6 (ADR-030): pull requests, schedule and workflow_dispatch;
+#                deploy/k8s on a kind cluster, then the k8s test project
 # Details and interpretations: docs/decisions/ADR-023-m9-polish-details.md.
 name: ci
 
@@ -159,3 +161,60 @@ jobs:
       - name: stack:down
         if: always()
         run: npm run stack:down
+
+  # Phase 2, item 6 (ADR-030): the same stack on Kubernetes. kind is pinned and its checksum
+  # verified; the node image is pinned by digest in deploy/kind/cluster.yaml.
+  k8s:
+    needs: static
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KIND_VERSION: v0.33.0
+      KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Install kind
+        run: |
+          curl -fsSLo kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  kind" | sha256sum --check
+          sudo install -m 0755 kind /usr/local/bin/kind
+          rm kind
+          kind version
+          kubectl version --client
+
+      - run: npm run k8s:up
+
+      - run: npm run test:k8s
+
+      - name: Collect cluster state and logs
+        if: failure()
+        run: |
+          kubectl --context kind-payment-switch -n payment-switch get all,networkpolicy,pvc -o wide > k8s-state.txt 2>&1 || true
+          kubectl --context kind-payment-switch -n payment-switch describe pods >> k8s-state.txt 2>&1 || true
+          kubectl --context kind-payment-switch get events -A --sort-by=.lastTimestamp >> k8s-state.txt 2>&1 || true
+          kubectl --context kind-payment-switch describe nodes >> k8s-state.txt 2>&1 || true
+          kind export logs k8s-logs --name payment-switch || true
+
+      - name: Upload cluster state and logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8s-logs
+          path: |
+            k8s-state.txt
+            k8s-logs
+          retention-days: 14
+
+      - name: k8s:down
+        if: always()
+        run: npm run k8s:down

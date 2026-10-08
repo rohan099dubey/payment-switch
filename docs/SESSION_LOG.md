@@ -1434,3 +1434,82 @@ doubles Orchestrator CPU per transfer.** No benchmarks.md row written yet.
   mirror every Compose service and env var, so whichever of P2-4 or P2-6 merges second adds the other's
   entries. Both add `tests/unit/**/*.test.ts` to the vitest unit project (a trivial conflict). Tell that
   session before any k6 benchmark.
+
+## 2026-10-08 — Session 5 — P2-6 Kubernetes manifests (in parallel with P2-4/P2-5)
+
+**Status at end:** P2-6 every box but CI ticked, branch `claude/p2-6-kubernetes`. Another
+session owns P2-4 and P2-5 and the shared Compose stack. The owner approved P2-6 here, and
+the two sessions coordinated over cross-session messages: who owns which branch, ADR numbers
+(P2-5 = 029, P2-6 = 030), and no Docker load during the other session's k6 A/B.
+
+**Done**
+- `deploy/k8s` (kustomize) and `deploy/kind/cluster.yaml`; `npm run k8s:up` / `k8s:down`;
+  vitest project `k8s` (`npm run test:k8s`); CI job `k8s`; ADR-030.
+- `tests/unit/k8sManifests.test.ts`: Compose parity, value for value, plus network-policy
+  edges derived from each service's `DATABASE_URL`.
+
+**Results (measured)**
+```text
+unit 736/736 (37 files); k8sManifests 66 tests; 7 mutants (value, dropped var, wrong wait,
+  foreign DB allowed, wrong DB owner, :latest image, init SQL drift): each fails it
+k8s:up on a fresh cluster: 2 min 51 s, 17 pods ready, 0 restarts; re-run (rolling restart) 1 min 34 s
+test:k8s run 2: 5/5; crash: 200 leases on the victim, http 503 x 200, 200/200 finished by
+  recovery on another instance, I1-I10 hold; unscoped invariants 406 transfers hold
+test:k8s run 3: 5/5, same shape; unscoped invariants 609 transfers hold
+red check: network policies deleted -> isolation test fails; re-applied -> passes
+README check: seed through port-forwards, curl to 127.0.0.1:30080 -> 201 SUCCESS
+memory: the kind node uses 2.5 GiB (Docker Desktop has 7.35 GiB)
+```
+
+**Gotchas**
+- **`kubectl delete pod --force --grace-period=0` is not a crash.** It deletes the API object
+  at once, but the kubelet still sends SIGTERM, and the Orchestrator's graceful shutdown let
+  all 200 in-flight transfers finish (200 x `201`, recovery idle). The invariants held, and
+  only the takeover assertion showed that the test proved nothing. The crash is now
+  `kill -9` of the container's PID, found with `crictl inspect` on the kind node, followed by
+  a forced delete so the replacement is a new instance. Note: `kill -9 1` from inside the
+  container would not work, because PID 1 ignores signals it has no handler for.
+- **gRPC through a ClusterIP Service balances connections, not requests.** Both Gateways
+  pinned to one Orchestrator, which held all 200 leases. That is fine for correctness and is
+  why the test kills "the instance holding the most leases" rather than a random one. It is
+  also why two replicas would not raise throughput without client-side balancing (M8).
+- `crictl pods --name` is a regex over a substring: `orchestrator` also matches
+  `postgres-orchestrator`. Anchor it (`'^name$'`).
+- A one-off generator wrote the seven service manifests. It is not committed: the YAML is
+  the source, and the parity test guards it.
+- winget installed kind to `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Kubernetes.kind_*\kind.exe`.
+  The app's shells predate the PATH change, so `scripts/k8s.ts` honours `KIND=<path>`.
+- Vite warns that `vitest.config.mts` imports a `.ts` module without an extension (a
+  future-default `configLoader: 'native'` issue). It is only a warning.
+
+**Next action**
+1. PR for P2-6; CI including the new `k8s` job.
+2. After P2-4 merges, rebase, then add its Compose additions (OTEL variables, Jaeger with
+   its config file, Prometheus, Grafana) to `deploy/k8s`; the parity test will demand them.
+   Then rerun `test:k8s` and merge fast-forward.
+
+**Continued after a power loss (2026-10-08, afternoon)**
+- Nothing was lost: the branch matched `origin`, and PR #4's CI had finished green on
+  `d768a8e` (`static`, `integration`, `k8s` 4 min 35 s) before the outage.
+- Rebased P2-6 onto P2-4's tip (`7975f45`) on a local scratch branch `p2-6-on-p2-4`: one
+  squashed commit, conflicts only in appended doc sections, `vitest.config.mts` comments and the
+  lockfile (taken from P2-4, then `npm install`). The parity test then refused to load
+  (`no Deployment or StatefulSet jaeger`), which is the guard doing its job.
+- Mirrored P2-4: see ADR-030 "Observability". Configs come from `observability/` through
+  `configMapGenerator`s, so `k8s:up` renders with `kubectl kustomize --load-restrictor
+  LoadRestrictionsNone` and pipes to `kubectl apply -f -` (`apply -k` has no such flag).
+
+```text
+unit 781/781 (38 files); k8sManifests 106 tests; 7 new mutants each fail it
+fresh kind cluster with P2-4: 4 min 4 s, 20 pods ready, 0 restarts; kind node 3.0 GiB
+test:k8s 9/9, three runs; Prometheus 10 targets / 7 jobs up; trace across 5 services;
+  crash: 200 x 503, 200/200 finished by recovery, 200/200 by another instance; I1-I10 hold
+```
+
+**Gotcha:** the takeover count read the lease owner of each transfer's *last* event. Some final
+events carry no lease owner, so one run reported 183 of 200. The query now reads the last event
+that names an owner: 200 of 200. A reporting fix only; the invariants held in every run.
+
+**Next action:** when P2-4 is on `main`, rebase the scratch commit onto `main`, move
+`claude/p2-6-kubernetes` to it (`--force-with-lease`, my own PR branch), let CI run, merge
+fast-forward, rerun the checks in the main checkout, push `main`.
