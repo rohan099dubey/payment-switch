@@ -57,21 +57,24 @@ extra latency is acceptable. The burst test now also requires that
 `rate_limit_fail_open_total` does not move while Redis is healthy.
 
 
-## Amendment 2 (2026-10-08): the burst test sends over keep-alive connections
+## Amendment 2 (2026-10-08): the burst test uses the cheapest admitted request
 
-The first CI run of P2-4 (run 37753293818) failed the burst test again, differently: all
-450 requests were answered `404`, none `429`, because they reached the Gateway over 5.2 s.
-The test needs more than 200 + 100·t requests to arrive within t seconds, so the whole
-burst must land in under 2.5 s. P2-3's green run had taken 2.44 s: the margin was 0.06 s.
-The limiter was right every time. The test's sender was the bottleneck: each request opened
-a new TCP connection, and Docker's published-port proxy accepts new connections slowly (on
-Docker Desktop for Windows some never arrive and are retried 20 s later; a local run took
-20 s and failed the same way). P2-4's tracing, Jaeger, Prometheus and Grafana add load to
-the CI runner, which tipped the balance.
+P2-4's first CI runs failed the burst test three times (runs 37753293818 twice and
+37757122232): every request was admitted and none got `429`. The test needs more than
+200 + 100·t requests to reach the limiter within t seconds. The burst was 450
+`GET /v1/transfers/{id}`, and each admitted one makes a gRPC call to the Orchestrator and a
+Postgres query. On a CI runner that path serves about 165 requests a second (2.74 s for
+the burst even over keep-alive connections), and P2-3's green run had taken 2.44 s, a
+margin of 0.06 s. P2-4's tracing, Jaeger, Prometheus and Grafana took the rest of that
+margin. Locally a second effect appeared: one new TCP connection per request through
+Docker Desktop's port proxy, where some connections never arrive and are retried 20 s
+later. The limiter was right every time; the test measured the stack's spare capacity.
 
-Decision: the burst goes over 16 keep-alive connections
-(`GatewayClient.getTransfersOverPool`), so requests arrive as fast as the Gateway answers.
-Every assertion is unchanged: some `429 RATE_LIMITED` with `Retry-After` and
-`X-RateLimit-Remaining: 0`, at most 200 + 100·t + 5 admitted, the rejection counter
-matching, and no fail-open. Locally the burst now takes 0.5–0.8 s (241 admitted, 209
-limited in one run). The burst helper does not retry: a lost request fails the test.
+Decision: the burst is 600 `POST /v1/transfers` with no `Idempotency-Key`, over 16
+keep-alive connections (`GatewayClient.burstOverPool`). Those requests pass both guards
+(authentication, then the limiter), and an admitted one is answered
+`400 IDEMPOTENCY_KEY_REQUIRED` straight away, with no downstream call. The limiter, not the
+Orchestrator, now sets the pace. Every assertion keeps its strength: some
+`429 RATE_LIMITED` with `Retry-After` and `X-RateLimit-Remaining: 0`, at most
+200 + 100·t + 5 admitted, the rejection counter matching, and no fail-open. The metrics test
+now looks for the `429` series on `POST /v1/transfers`.

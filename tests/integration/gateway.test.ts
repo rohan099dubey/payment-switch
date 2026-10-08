@@ -74,16 +74,15 @@ describe('rate limiting through the Gateway', () => {
       const failOpenBefore = await metric('rate_limit_fail_open_total');
 
       const started = Date.now();
-      // 450 requests over 16 keep-alive connections: they arrive as fast as the Gateway
-      // answers, not as fast as Docker accepts new connections (ADR-019, amendment 2).
-      const results = await client.getTransfersOverPool(
-        Array.from({ length: 450 }, () => randomUUID()),
-        16,
-      );
+      // 600 POSTs with no Idempotency-Key over 16 keep-alive connections. Past the two guards
+      // (authentication, then the limiter) each admitted one is answered 400 at once, with
+      // no call to the Orchestrator, so the limiter, not the stack, sets the pace
+      // (ADR-019, amendment 2: the earlier GET burst was too slow on a CI runner).
+      const results = await client.burstOverPool('POST', '/v1/transfers', 600, 16);
       const elapsedS = (Date.now() - started) / 1000;
 
       const limited = results.filter((r) => r.status === 429);
-      const passed = results.filter((r) => r.status === 404);
+      const passed = results.filter((r) => r.status === 400);
       expect(limited.length + passed.length).toBe(results.length);
       expect(limited.length).toBeGreaterThan(0);
       // burst 200 plus 100/s refill while the calls ran, plus a little slack.
@@ -93,7 +92,10 @@ describe('rate limiting through the Gateway', () => {
         expect(Number(r.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
         expect(r.headers.get('x-ratelimit-remaining')).toBe('0');
       }
-      for (const r of passed) expect(r.headers.get('x-ratelimit-remaining')).toMatch(/^\d+$/);
+      for (const r of passed) {
+        expect(r.body).toMatchObject({ error: { code: 'IDEMPOTENCY_KEY_REQUIRED' } });
+        expect(r.headers.get('x-ratelimit-remaining')).toMatch(/^\d+$/);
+      }
       expect(await metric('rate_limit_rejections_total')).toBe(before + limited.length);
       // Redis is healthy, so a burst must never be let through by the fail-open path
       // (ADR-019 amendment: a too-short command timeout once did exactly that on CI).
@@ -176,7 +178,7 @@ describe('metrics and logs', () => {
   it('exposes the section 17 Gateway metrics with route templates', async () => {
     const body = (await rawRequest<string>('GET', '/metrics')).body;
     expect(body).toMatch(/^http_requests_total\{method="POST",route="\/v1\/transfers",status="201"\} \d+/m);
-    expect(body).toMatch(/^http_requests_total\{method="GET",route="\/v1\/transfers\/:id",status="429"\} \d+/m);
+    expect(body).toMatch(/^http_requests_total\{method="POST",route="\/v1\/transfers",status="429"\} \d+/m);
     expect(body).toMatch(/^http_request_duration_seconds_count\{method="POST",route="\/v1\/auth\/token"\} \d+/m);
     expect(body).toMatch(/^rate_limit_rejections_total \d+/m);
     expect(body).toMatch(/^rate_limit_fail_open_total \d+/m);
