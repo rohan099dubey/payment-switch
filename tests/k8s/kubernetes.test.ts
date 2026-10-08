@@ -32,11 +32,13 @@ import {
 } from '../helpers/chaosRun';
 import { DEV_CLIENTS, GatewayClient, type HttpResult } from '../helpers/gatewayClient';
 import { formatResults, snapshotBaseline } from '../helpers/invariants';
-import { crashPod, execIn, pods } from '../helpers/kube';
+import { containerPid, crashPod, execIn, pods } from '../helpers/kube';
 import { waitFor } from '../helpers/stack';
 
 const RUN = `k8s-${randomUUID().slice(0, 8)}`;
 const TRANSFERS = 200;
+/** The victim must hold at least this many of the run's leases when it is killed. */
+const MIN_LEASES = 20;
 const TERMINAL = new Set(['SUCCESS', 'FAILED', 'REVERSED', 'NEEDS_MANUAL_REVIEW']);
 let stack: ChaosStack;
 
@@ -151,6 +153,13 @@ describe('the stack on Kubernetes (ADR-030)', () => {
         });
       }
 
+      // Resolve both Orchestrators' PIDs first, so the kill lands the moment it is decided.
+      const pids = new Map<string, number>();
+      for (const p of await pods('orchestrator')) {
+        if (p.ready && !p.deleting) pids.set(p.name, await containerPid(p.name, 'orchestrator'));
+      }
+      expect(pids.size).toBe(2);
+
       const random = mulberry32(11);
       const pick = (): (typeof accounts)[number] => pickFrom(accounts, random);
       const sends: Promise<Answer>[] = [];
@@ -180,19 +189,28 @@ describe('the stack on Kubernetes (ADR-030)', () => {
         );
       }
 
-      // Kill the Orchestrator that holds the most of this run's leases right now.
-      await sleep(1000);
-      const holders = await stack.orchDb.query<{ instance: string; n: number }>(
-        `SELECT split_part(lease_owner, ':', 1) AS instance, count(*)::int AS n FROM transfers
-          WHERE idempotency_key LIKE $1 || '%' AND lease_owner IS NOT NULL
-          GROUP BY 1 ORDER BY 2 DESC`,
-        [RUN],
+      // Kill the Orchestrator holding the most of this run's leases, once it holds at least
+      // MIN_LEASES. A fixed 1 s wait was flaky: on a slow CI runner the victim held only 2
+      // leases then, both finished before the kill, and nothing was left to take over.
+      let holders: { instance: string; n: number }[] = [];
+      await waitFor(
+        `an Orchestrator holding at least ${String(MIN_LEASES)} of this run's leases`,
+        async () => {
+          const r = await stack.orchDb.query<{ instance: string; n: number }>(
+            `SELECT split_part(lease_owner, ':', 1) AS instance, count(*)::int AS n FROM transfers
+              WHERE idempotency_key LIKE $1 || '%' AND lease_owner IS NOT NULL AND lease_expires_at > now()
+              GROUP BY 1 ORDER BY 2 DESC`,
+            [RUN],
+          );
+          holders = r.rows;
+          return (holders[0]?.n ?? 0) >= MIN_LEASES;
+        },
+        30_000,
       );
-      const victim = holders.rows[0]?.instance;
-      if (victim === undefined) throw new Error('no transfer of this run holds a lease: the kill would prove nothing');
-      const orchestrators = (await pods('orchestrator')).map((p) => p.name);
-      expect(orchestrators).toContain(victim);
-      await crashPod(victim, 'orchestrator');
+      const victim = holders[0]?.instance ?? '';
+      const pid = pids.get(victim);
+      if (pid === undefined) throw new Error(`lease holder ${victim} is not a known Orchestrator pod`);
+      await crashPod(victim, pid);
       const answers = await Promise.all(sends);
 
       await stack.banks.clearChaos('bank_a');
@@ -224,7 +242,7 @@ describe('the stack on Kubernetes (ADR-030)', () => {
         `k8s crash ${RUN}: ${JSON.stringify({
           sent: TRANSFERS,
           killed: victim,
-          leasesHeld: holders.rows,
+          leasesHeld: holders,
           http: countBy(answers, (a) => String(a.status)),
           registered: report.transfers.length,
           final: countBy(report.transfers, (t) => t.state),

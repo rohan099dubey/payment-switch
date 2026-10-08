@@ -1561,3 +1561,13 @@ in the main checkout. The P2-5 session rebases onto it and mirrors `SNAPSHOT_INT
 - `checkI9` crashes on an outbox row whose payload has no payee (the fake row above): it reads
   `payload->'payee'->>'account_id'` and called `.startsWith` on null. Fixed in P2-5: it now reports
   "payload has no payee" as an I9 problem (unit test added).
+
+## 2026-10-08 — Session 5 (continued) — k8s crash test timing
+
+The `k8s` job on `f8960e4` (the
+docs commit pushed to PR #4 as it merged) failed: the victim held only 2 leases when chosen 1 s
+in, those 2 finished during the ~1 s `crictl` lookup, `finishedByAnotherInstance` 0. The system
+was fine (every transfer terminal, I1-I10). Fixed on `claude/p2-6-k8s-crash-timing`: PIDs
+resolved before the traffic (`containerPid`), the victim chosen once it holds at least 20 live
+leases, `kill -9` of the known PID. Lesson: a timing-based test that passes locally (16 CPUs)
+must be judged on the slowest machine that runs it.
