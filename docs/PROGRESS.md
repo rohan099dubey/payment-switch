@@ -24,7 +24,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | P2-2 | Notification service (phase 2, §19 item 2) | `DONE` | 19 (+ ADR-025, ADR-026) | 2026-10-07 | see `git log --grep "P2-2"` |
 | P2-3 | Reconciliation service (phase 2, §19 item 3) | `DONE` | 7, 8, 9, 19 (+ ADR-027) | 2026-10-07 | see `git log --grep "P2-3"` |
 | P2-4 | Tracing & dashboards (phase 2, §19 item 4) | `DONE` | 17, 19 (+ ADR-028) | 2026-10-08 | see `git log --grep "P2-4"` |
-| P2-6 | Kubernetes manifests (phase 2, §19 item 6, optional) | `IN_PROGRESS` (all boxes ticked; merges after P2-4) | 15, 19 (+ ADR-030) | | see `git log --grep "P2-6"` |
+| P2-6 | Kubernetes manifests (phase 2, §19 item 6, optional) | `DONE` | 15, 19 (+ ADR-030) | 2026-10-08 | see `git log --grep "P2-6"` |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -459,5 +459,5 @@ Acceptance
 - [x] `npm run test:k8s` green (5/5, twice): all pods ready; a foreign database unreachable and its own reachable; SUCCESS / replay / FAILED / REVERSED through the NodePort; the Orchestrator holding all 200 leases SIGKILLed mid-flight: 200 × `503`, **200 of 200 finished by recovery on another instance**, I1–I10 hold; unscoped `npm run invariants` green (406, then 609 transfers). Red check: with the network policies deleted the isolation test fails, restored it passes. The first run exposed a test gap, not a system bug: `kubectl delete --force` is not a crash (see SESSION_LOG)
 - [x] `npm run lint && npm run typecheck && npm test` green (unit 736/736, 37 files; after the P2-4 rebase 781/781, 38 files)
 - [x] After the P2-4 rebase: the parity test failed first (no `jaeger` workload), as designed; with the stack mirrored it passes (106 tests) and 7 more mutants fail it (Jaeger args, an unmounted dashboard, a missing scrape job, Jaeger refusing a service's spans, a drifted Kafka health check, a wrong `OTEL_SERVICE_NAME`, init SQL from the wrong file). Fresh cluster: 4 min 4 s, 20 pods ready, 0 restarts. `test:k8s` 9/9 three times: also every pod a healthy Prometheus target (10 targets, 7 jobs), every dashboard query runs, Grafana serves the dashboard, one transfer is one trace across the 5 services; crash 200/200 finished by another instance, I1–I10
-- [x] CI green on GitHub, including the new `k8s` job: PR rohan099dubey/payment-switch#4, run 37761743256 on `d768a8e` (`static`, `integration`, `k8s` 4 min 35 s). The first run's `k8s` failed: 2-CPU runner, CPU requests too large, three Postgres pods unschedulable. Fixed in `d768a8e` with a budget unit test
+- [x] CI green on GitHub on the final commit `c50506a` (rebased onto `main` with P2-4): run 37779798935, `static`, `integration`, `k8s` 5 min 21 s. Local acceptance on that commit: fresh cluster 5 min 51 s, 20 pods, `test:k8s` 9/9, I1–I10. Earlier: PR rohan099dubey/payment-switch#4, run 37761743256 on `d768a8e` (`static`, `integration`, `k8s` 4 min 35 s). The first run's `k8s` failed: 2-CPU runner, CPU requests too large, three Postgres pods unschedulable. Fixed in `d768a8e` with a budget unit test
 
