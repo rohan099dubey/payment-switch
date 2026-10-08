@@ -1521,3 +1521,43 @@ I1–I10 (that run's victim held 11 leases when killed; 51 transfers finished by
 200 by recovery). `main` fast-forwarded to `c50506a`; build, lint, typecheck and unit 781/781 green
 in the main checkout. The P2-5 session rebases onto it and mirrors `SNAPSHOT_INTERVAL_MS` and
 `SNAPSHOT_LOCK_TIMEOUT_MS` into `deploy/k8s/ledger.yaml` (the parity test will ask for them).
+
+## 2026-10-08 — Session 4 (continued) — P2-4 merged; P2-5 Ledger balance snapshots
+
+**Done**
+- **P2-4 `DONE` and merged** (`main` = `f13b27d`, pushed; PR #5 merged). Its CI failed three times on
+  the Gateway rate-limit burst test (ADR-019 amendment 2): a burst of 450 GETs must reach the
+  limiter in under 2.5 s, P2-3's green run had taken 2.44 s, and on the CI runner every admitted
+  GET makes an Orchestrator and Postgres round trip (~165/s even over keep-alive). The burst is now
+  600 `POST /v1/transfers` with no `Idempotency-Key` over 16 keep-alive connections: admitted ones
+  get `400` with no downstream call. Assertions unchanged. Then PR checks and nightly were green on `7530c57`.
+- **P2-5 implemented** (ADR-029): migration `0005_balance_snapshots.sql`, `snapshotRepo.ts` (cut
+  under a brief bounded `SHARE` lock, incremental under an advisory lock), the snapshot read path in
+  `balanceRepo.ts`, `snapshotter.ts` (every 60 s), metric, config, invariant **I11**,
+  `npm run bench:balance`, integration test file (5), unit tests (4), mutants in a throwaway project.
+- Measured: `GetBalance('transit')` p50 87 ms → 4.4 ms (fresh snapshot) / 5.4 ms (9k entries behind,
+  under 50/s load); `GetTrialBalance` 215 → 4.3 / 6.6 ms (`docs/benchmarks.md`).
+
+**Gotchas**
+- **`ORDER BY` resolves to an output column first.** `SELECT last_entry_id::text … ORDER BY
+  last_entry_id` sorted the text, so '982' > '2414'. Six-digit ids on the dev stack hid it; an empty
+  throwaway database found it. Always alias text casts differently from the column you sort by.
+- **Run a new feature against an empty database before claiming it works.** The CI stack starts
+  empty; the dev stack does not.
+- **Concurrent sessions on one stack are destructive.** Another session ("Continue interrupted
+  work") ran the full integration suite at the same time as mine and was killed mid-run. It left
+  `bank_a` with chaos `lostResponseRate: 1` (cleared by me with `BankAdmin.clearChaos`), and the
+  P2-1 outbox test then committed a fake `transfer.failed` event (outbox id 226370, payload `{}`)
+  for a transfer that was not yet terminal. Transfer `4bad8053-d5e2-41dc-83c4-41667be8034c` is now
+  stuck in `CREDITED` forever (its real event conflicts with `UNIQUE (aggregate_id)`), and recovery
+  retries it every second without backing off. Deleting the fake row was **denied by the auto-mode
+  classifier** (shared data); it is the owner's call. Backup of the row:
+  `{"id":226370,"aggregate_id":"4bad8053-…","event_type":"transfer.failed","payload":{},"created_at":"2026-10-08T12:33:53.052964+00:00","published_at":"2026-10-08T12:33:53.498335+00:00"}`.
+  Until it is removed, every integration test that waits for "no transfer in flight" times out on
+  the dev stack (7 tests). Two follow-up tasks were filed: recovery backoff on unexpected transition
+  errors, and making the outbox uniqueness test unable to commit.
+- Because of that, P2-5's full verification ran on a **clean-room** project
+  (`COMPOSE_PROJECT_NAME=payment-switch-fresh`, ADR-023) with the dev stack stopped (data kept).
+- `checkI9` crashes on an outbox row whose payload has no payee (the fake row above): it reads
+  `payload->'payee'->>'account_id'` and called `.startsWith` on null. Fixed in P2-5: it now reports
+  "payload has no payee" as an I9 problem (unit test added).

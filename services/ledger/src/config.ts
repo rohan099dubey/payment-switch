@@ -11,6 +11,9 @@ export const ledgerConfigSchema = z.object({
   GRPC_PORT: port(50052),
   HTTP_PORT: port(9102),
   DATABASE_URL: z.string().min(1).default('postgres://ledger:ledger@postgres-ledger:5432/ledger_db'),
+  // Phase 2, item 5 (ADR-029): balance snapshots.
+  SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  SNAPSHOT_LOCK_TIMEOUT_MS: z.coerce.number().int().positive().max(5_000).default(200),
 });
 
 export type LedgerConfig = z.output<typeof ledgerConfigSchema>;

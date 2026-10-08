@@ -8,6 +8,8 @@ import { createLedgerHandlers } from './grpc/handlers';
 import { startGrpcServer } from './grpc/server';
 import { createLedgerMetrics } from './metrics';
 import { ping } from './repo/balanceRepo';
+import { createSnapshot } from './repo/snapshotRepo';
+import { Snapshotter } from './snapshotter';
 
 const SHUTDOWN_GRACE_MS = 10_000;
 
@@ -33,6 +35,15 @@ async function main(): Promise<void> {
       return true;
     },
   });
+  const snapshotter = new Snapshotter({
+    createSnapshot: () => createSnapshot(pool, { lockTimeoutMs: config.SNAPSHOT_LOCK_TIMEOUT_MS }),
+    logger,
+    observe: (result) => {
+      metrics.balanceSnapshots.inc({ result });
+    },
+    intervalMs: config.SNAPSHOT_INTERVAL_MS,
+  });
+  snapshotter.start();
   logger.info({ grpc_port: grpcServer.port, http_port: config.HTTP_PORT }, 'ledger started');
 
   let stopping = false;
@@ -42,6 +53,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'ledger shutting down');
     void (async () => {
       await grpcServer.shutdown(SHUTDOWN_GRACE_MS);
+      await snapshotter.stop();
       await health.close();
       await pool.end();
       await shutdownTracing();

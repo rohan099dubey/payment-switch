@@ -27,7 +27,7 @@ import type { Pool, QueryResult, QueryResultRow } from 'pg';
 import type { BankAdmin, BankId } from './bankAdmin';
 import type { JournalView, LedgerReader } from './ledgerClient';
 
-export type InvariantId = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'I6' | 'I7' | 'I8' | 'I9' | 'I10';
+export type InvariantId = 'I1' | 'I2' | 'I3' | 'I4' | 'I5' | 'I6' | 'I7' | 'I8' | 'I9' | 'I10' | 'I11';
 
 export interface InvariantResult {
   id: InvariantId;
@@ -468,7 +468,8 @@ export async function awaitOutboxPublished(
 export interface NotificationFacts {
   eventId: string;
   transferId: string;
-  payeeAccountId: string;
+  /** Null when the event's payload has no payee: a malformed event, reported, not a crash. */
+  payeeAccountId: string | null;
   outcome: string | null;
   attempts: number | null;
 }
@@ -478,7 +479,7 @@ export async function loadNotificationFacts(
   notifyDb: Pool,
   transferIds: readonly string[],
 ): Promise<NotificationFacts[]> {
-  const events = await readQuery<{ id: string; aggregate_id: string; payee: string }>(
+  const events = await readQuery<{ id: string; aggregate_id: string; payee: string | null }>(
     orchDb,
     `SELECT id::text AS id, aggregate_id, payload->'payee'->>'account_id' AS payee
        FROM outbox WHERE aggregate_id = ANY($1::uuid[]) AND published_at IS NOT NULL`,
@@ -506,6 +507,10 @@ export function checkI9(facts: NotificationFacts[]): InvariantResult {
   let delivered = 0;
   let deadLettered = 0;
   for (const f of facts) {
+    if (f.payeeAccountId === null) {
+      problems.push(`event ${f.eventId} (${f.transferId}): payload has no payee`);
+      continue;
+    }
     const expected = f.payeeAccountId.startsWith('whfail-') ? 'DEAD_LETTERED' : 'DELIVERED';
     if (f.outcome === null) problems.push(`event ${f.eventId} (${f.transferId}): no outcome recorded`);
     else if (f.outcome !== expected)
@@ -555,6 +560,109 @@ export async function loadOpenBreakRefs(reconDb: Pool): Promise<Set<string>> {
     "SELECT DISTINCT reference_id FROM reconciliation_breaks WHERE status = 'OPEN'",
   );
   return new Set(r.rows.map((row) => row.reference_id));
+}
+
+/**
+ * Each snapshot's lines against the raw entries it covers. One pass over `entries`: the
+ * entries between consecutive snapshots are summed per account, then accumulated. A line
+ * that differs, or a missing line for an account with covered entries, is a problem.
+ */
+const SNAPSHOT_MISMATCHES_SQL = `
+  WITH s AS (
+         SELECT id, last_entry_id, lag(last_entry_id, 1, 0::bigint) OVER (ORDER BY last_entry_id) AS prev
+           FROM balance_snapshots
+       ),
+       delta AS (
+         SELECT s.id, s.last_entry_id, a.id AS account_id,
+                COALESCE(SUM(e.amount) FILTER (WHERE e.direction = 'D'), 0) AS d,
+                COALESCE(SUM(e.amount) FILTER (WHERE e.direction = 'C'), 0) AS c
+           FROM s
+          CROSS JOIN accounts a
+           LEFT JOIN entries e ON e.account_id = a.id AND e.id > s.prev AND e.id <= s.last_entry_id
+          GROUP BY s.id, s.last_entry_id, a.id
+       ),
+       expected AS (
+         SELECT id, account_id,
+                SUM(d) OVER (PARTITION BY account_id ORDER BY last_entry_id) AS d,
+                SUM(c) OVER (PARTITION BY account_id ORDER BY last_entry_id) AS c
+           FROM delta
+       )
+  SELECT x.id::text AS snapshot_id, a.code, x.d::text AS d, x.c::text AS c,
+         l.debit_total::text AS line_d, l.credit_total::text AS line_c,
+         (SELECT count(*) FROM balance_snapshots)::text AS snapshots
+    FROM expected x
+    JOIN accounts a ON a.id = x.account_id
+    LEFT JOIN balance_snapshot_lines l ON l.snapshot_id = x.id AND l.account_id = x.account_id
+   WHERE (l.snapshot_id IS NULL AND (x.d <> 0 OR x.c <> 0))
+      OR l.debit_total <> x.d OR l.credit_total <> x.c`;
+
+/** Normal-side balance of every account, summed over every entry: no snapshot involved. */
+const RAW_BALANCES_SQL = `
+  SELECT a.code,
+         (CASE WHEN a.type = 'ASSET' THEN d - c ELSE c - d END)::text AS balance
+    FROM accounts a
+    LEFT JOIN LATERAL (
+          SELECT COALESCE(SUM(amount) FILTER (WHERE direction = 'D'), 0) AS d,
+                 COALESCE(SUM(amount) FILTER (WHERE direction = 'C'), 0) AS c
+            FROM entries WHERE account_id = a.id
+         ) t ON true`;
+
+async function rawBalances(ledgerDb: Pool): Promise<Map<string, bigint>> {
+  const r = await readQuery<{ code: string; balance: string }>(ledgerDb, RAW_BALANCES_SQL);
+  return new Map(r.rows.map((row) => [row.code, BigInt(row.balance)]));
+}
+
+const sameBalances = (a: Map<string, bigint>, b: Map<string, bigint>): boolean =>
+  a.size === b.size && [...a].every(([code, v]) => b.get(code) === v);
+
+/**
+ * I11 (phase 2, ADR-029): balance snapshots are faithful. (a) Every snapshot equals the raw
+ * sums of the entries it covers. (b) `GetTrialBalance`, which reads the latest snapshot plus
+ * the later entries, equals the raw sums over all entries. (b) needs a quiet ledger: it
+ * compares when the raw sums are unchanged across the call, and tries up to three times.
+ */
+export async function checkI11(deps: Pick<InvariantDeps, 'ledger' | 'ledgerDb'>): Promise<InvariantResult> {
+  const problems: string[] = [];
+  const present = await readQuery<{ present: boolean }>(
+    deps.ledgerDb,
+    "SELECT to_regclass('balance_snapshots') IS NOT NULL AS present",
+  );
+  if (present.rows[0]?.present !== true) return result('I11', 'no balance_snapshots table', ['migration 0005 missing']);
+
+  const mismatches = await readQuery<{
+    snapshot_id: string;
+    code: string;
+    d: string;
+    c: string;
+    line_d: string | null;
+    line_c: string | null;
+  }>(deps.ledgerDb, SNAPSHOT_MISMATCHES_SQL);
+  for (const m of mismatches.rows) {
+    problems.push(
+      `snapshot ${m.snapshot_id} ${m.code}: line ${m.line_d ?? 'missing'}/${m.line_c ?? 'missing'}, entries ${m.d}/${m.c}`,
+    );
+  }
+  const count = await readQuery<{ n: string }>(deps.ledgerDb, 'SELECT count(*)::text AS n FROM balance_snapshots');
+
+  let compared = false;
+  for (let attempt = 0; attempt < 3 && !compared; attempt++) {
+    const before = await rawBalances(deps.ledgerDb);
+    const trial = await deps.ledger.getTrialBalance();
+    const after = await rawBalances(deps.ledgerDb);
+    if (!sameBalances(before, after)) continue;
+    compared = true;
+    for (const [code, raw] of after) {
+      const read = trial.balances.get(code);
+      if (read !== raw) problems.push(`${code}: GetTrialBalance ${String(read)}, raw entries ${raw}`);
+    }
+  }
+  if (!compared) problems.push('ledger never quiet: GetTrialBalance not compared with the raw sums');
+
+  return result(
+    'I11',
+    `${count.rows[0]?.n ?? '?'} snapshots checked against their entries; GetTrialBalance ${compared ? 'compared' : 'not compared'} with raw sums`,
+    problems,
+  );
 }
 
 export interface DuplicateSample {

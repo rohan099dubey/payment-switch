@@ -27,6 +27,7 @@
     "k8s:down": "tsx scripts/k8s.ts down",
     "seed": "tsx scripts/seed.ts",
     "invariants": "tsx scripts/checkInvariants.ts",
+    "bench:balance": "tsx scripts/benchBalance.ts",
     "load": "k6 run load/transfer.k6.js"
   },
   "devDependencies": {

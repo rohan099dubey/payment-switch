@@ -12,6 +12,7 @@
     { "path": "../packages/common" },
     { "path": "../packages/proto-gen" },
     { "path": "../services/orchestrator" },
+    { "path": "../services/ledger" },
     { "path": "../services/mockBank" }
   ]
 }
