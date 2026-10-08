@@ -20,8 +20,11 @@
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "test:chaos": "vitest run --project chaos --silent=false",
+    "test:k8s": "vitest run --project k8s --silent=false",
     "stack:up": "docker compose up -d --build --wait",
     "stack:down": "docker compose down -v",
+    "k8s:up": "tsx scripts/k8s.ts up",
+    "k8s:down": "tsx scripts/k8s.ts down",
     "seed": "tsx scripts/seed.ts",
     "invariants": "tsx scripts/checkInvariants.ts",
     "load": "k6 run load/transfer.k6.js"
@@ -41,6 +44,7 @@
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "typescript-eslint": "8.71.0",
-    "vitest": "5.0.3"
+    "vitest": "5.0.3",
+    "yaml": "2.9.1"
   }
 }

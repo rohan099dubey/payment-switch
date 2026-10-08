@@ -1,0 +1,160 @@
+# Phase 2, item 2 (ADR-026): consumes transfer-events (consumer group `notification`),
+# deduplicates by event id, calls the simulated webhook, dead-letters after 5 attempts.
+# One replica: retries block its partitions on purpose (ADR-026).
+# Mirrors docker-compose.yml service `notification` (tests/unit/k8sManifests.test.ts checks every
+# variable). Waits for the same dependencies as its Compose depends_on, with init containers.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notification
+  labels:
+    app.kubernetes.io/name: notification
+    app.kubernetes.io/part-of: payment-switch
+data:
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  OTEL_SERVICE_NAME: notification
+  LOG_LEVEL: info
+  HTTP_PORT: '9103'
+  KAFKA_BROKERS: kafka:9092
+  WEBHOOK_RETRY_BASE_MS: '200'
+  WEBHOOK_FAILURE_RATE: '0'
+  WEBHOOK_SEED: '42'
+  WEBHOOK_LATENCY_MS: '0'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: notification
+  labels:
+    app.kubernetes.io/name: notification
+    app.kubernetes.io/part-of: payment-switch
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://notification:notification@postgres-notification:5432/notification_db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification
+  labels:
+    app.kubernetes.io/name: notification
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  selector:
+    app.kubernetes.io/name: notification
+  ports:
+    - name: http
+      port: 9103
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification
+  labels:
+    app.kubernetes.io/name: notification
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification
+        app.kubernetes.io/part-of: payment-switch
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        # The image's own `node` user.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres-notification
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          command:
+            [
+              'sh',
+              '-c',
+              'until nc -z -w 2 postgres-notification 5432; do echo waiting for postgres-notification:5432; sleep 2; done',
+            ]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+        - name: wait-for-kafka
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          command: ['sh', '-c', 'until nc -z -w 2 kafka 9092; do echo waiting for kafka:9092; sleep 2; done']
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+      containers:
+        - name: notification
+          # One image for every service (the repository Dockerfile); SERVICE picks the entry point.
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: notification
+            - secretRef:
+                name: notification
+          env:
+            - name: SERVICE
+              value: notification
+          ports:
+            - name: http
+              containerPort: 9103
+          # /healthz answers once migrations have run and the servers listen.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']

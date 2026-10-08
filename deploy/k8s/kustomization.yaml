@@ -1,0 +1,57 @@
+# Phase 2, item 6 (ARCHITECTURE.md section 19, ADR-030): the stack of docker-compose.yml
+# as Kubernetes manifests, for kind (deploy/kind/cluster.yaml) or minikube.
+#   npm run k8s:up      create the cluster, build and load the image, apply, wait
+#   npm run test:k8s    smoke and crash tests against the cluster, I1-I10
+#   npm run k8s:down    delete the cluster
+# Every value mirrors docker-compose.yml; tests/unit/k8sManifests.test.ts enforces it.
+#
+# The generators read the very files Compose mounts (observability/, scripts/), so there is
+# one copy of each. Files outside this directory need kustomize's load restrictor off:
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/k8s | kubectl apply -f -
+# (scripts/k8s.ts does exactly that).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: payment-switch
+resources:
+  - namespace.yaml
+  - network-policies.yaml
+  # Infrastructure: one Postgres per service (ADR-007), Redis, Kafka.
+  - postgres-orchestrator.yaml
+  - postgres-ledger.yaml
+  - postgres-banks.yaml
+  - postgres-notification.yaml
+  - postgres-reconciliation.yaml
+  - redis.yaml
+  - kafka.yaml
+  # The services.
+  - ledger.yaml
+  - bank-a.yaml
+  - bank-b.yaml
+  - orchestrator.yaml
+  - gateway.yaml
+  - notification.yaml
+  - reconciliation.yaml
+  # Phase 2, item 4 (ADR-028): traces, metrics, dashboards.
+  - jaeger.yaml
+  - prometheus.yaml
+  - grafana.yaml
+configMapGenerator:
+  - name: postgres-banks-init
+    files:
+      - ../../scripts/initBankDbs.sql
+  - name: jaeger-config
+    files:
+      - ../../observability/jaeger/config.yaml
+  # Kubernetes service discovery instead of Compose's static targets (see the file).
+  - name: prometheus-config
+    files:
+      - prometheus.yml
+  - name: grafana-datasources
+    files:
+      - ../../observability/grafana/provisioning/datasources/datasources.yml
+  - name: grafana-dashboard-providers
+    files:
+      - ../../observability/grafana/provisioning/dashboards/dashboards.yml
+  - name: grafana-dashboards
+    files:
+      - ../../observability/grafana/dashboards/payment-switch.json

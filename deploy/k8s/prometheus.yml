@@ -1,0 +1,27 @@
+# Phase 2, item 4 (ADR-028) on Kubernetes (ADR-030): the same seven jobs and intervals as
+# observability/prometheus/prometheus.yml, but every pod is a target. Compose has one
+# container per service, so it scrapes `gateway:8080`. Here a Service hides several replicas
+# and would hand each scrape to a different pod, mixing their counters. So targets come from
+# the Kubernetes API (role: pod), keep the pod's `http` port, and take the job name from the
+# pod's app label. tests/unit/k8sManifests.test.ts checks the jobs match the Compose file.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: payment-switch
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          own_namespace: true
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        regex: gateway|orchestrator|ledger|bank-a|bank-b|notification|reconciliation
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: http
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: job
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: instance

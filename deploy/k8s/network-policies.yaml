@@ -1,0 +1,244 @@
+# The service boundaries of section 4, enforced by the network (ADR-030). Compose puts
+# every container on one flat network, so "database per service" (ADR-007) is a rule
+# the code keeps. Here it is also a rule the cluster keeps: each Postgres accepts
+# connections only from the service that owns it, and each gRPC port only from its
+# callers. tests/k8s/kubernetes.test.ts proves a foreign database is unreachable.
+#
+# Deny all ingress, then allow exactly the edges of the architecture diagram.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: ['Ingress']
+---
+# /healthz, /readyz and /metrics of every service, and the Gateway's public API: open to
+# everyone (kubelet probes, a future Prometheus, NodePort traffic).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-http
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ['gateway', 'orchestrator', 'ledger', 'bank-a', 'bank-b', 'notification', 'reconciliation']
+  policyTypes: ['Ingress']
+  ingress:
+    - ports:
+        - port: http
+---
+# Gateway -> Orchestrator (gRPC).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orchestrator-grpc
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: orchestrator
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - port: grpc
+---
+# Orchestrator and Reconciliation -> Ledger and both banks (gRPC).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ledger-and-banks-grpc
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ['ledger', 'bank-a', 'bank-b']
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ['orchestrator', 'reconciliation']
+      ports:
+        - port: grpc
+---
+# Each database, from its owner only (ADR-007).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-orchestrator
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-orchestrator
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orchestrator
+      ports:
+        - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ledger
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-ledger
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ledger
+      ports:
+        - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-banks
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-banks
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ['bank-a', 'bank-b']
+      ports:
+        - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-notification
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-notification
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: notification
+      ports:
+        - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-reconciliation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-reconciliation
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: reconciliation
+      ports:
+        - port: 5432
+---
+# Redis holds rate-limit buckets for the Gateway only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - port: 6379
+---
+# Kafka: the Orchestrator's relay produces, Notification consumes and dead-letters, and the
+# broker talks to its own controller listener.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafka
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ['orchestrator', 'notification', 'kafka']
+      ports:
+        - port: 9092
+        - port: 9093
+---
+# Phase 2, item 4 (ADR-028): every service exports spans to Jaeger (OTLP/HTTP); Grafana
+# reads traces from its query port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jaeger
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ['gateway', 'orchestrator', 'ledger', 'bank-a', 'bank-b', 'notification', 'reconciliation']
+      ports:
+        - port: 4318
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: grafana
+      ports:
+        - port: 16686
+---
+# Grafana is Prometheus's only client. (Prometheus itself scrapes the open HTTP ports.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: grafana
+      ports:
+        - port: 9090

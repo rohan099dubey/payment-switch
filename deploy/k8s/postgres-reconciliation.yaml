@@ -1,0 +1,104 @@
+# Phase 2, item 3 (ADR-027): the reconciliation service's own database (ADR-007).
+# Mirrors docker-compose.yml service `postgres-reconciliation`: postgres:16, the same user, password and
+# database, a pg_isready check over TCP. A StatefulSet with its own volume claim stands in
+# for the Compose named volume; `npm run k8s:down` (deleting the cluster) is the full reset.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-reconciliation
+  labels:
+    app.kubernetes.io/name: postgres-reconciliation
+    app.kubernetes.io/part-of: payment-switch
+type: Opaque
+stringData:
+  POSTGRES_USER: reconciliation
+  POSTGRES_PASSWORD: reconciliation
+  POSTGRES_DB: reconciliation_db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-reconciliation
+  labels:
+    app.kubernetes.io/name: postgres-reconciliation
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  # Headless: the StatefulSet's governing service; clients resolve straight to the pod.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres-reconciliation
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-reconciliation
+  labels:
+    app.kubernetes.io/name: postgres-reconciliation
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  serviceName: postgres-reconciliation
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-reconciliation
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-reconciliation
+        app.kubernetes.io/part-of: payment-switch
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16
+          envFrom:
+            - secretRef:
+                name: postgres-reconciliation
+          env:
+            # A subdirectory, because a volume's root may hold lost+found.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          # TCP on 127.0.0.1, as in Compose: during first-start initialisation the server
+          # listens on the unix socket only, so this cannot pass before init scripts finish.
+          readinessProbe:
+            exec:
+              command: ['pg_isready', '-h', '127.0.0.1', '-U', 'reconciliation', '-d', 'reconciliation_db']
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ['pg_isready', '-h', '127.0.0.1', '-U', 'reconciliation', '-d', 'reconciliation_db']
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        resources:
+          requests:
+            storage: 1Gi

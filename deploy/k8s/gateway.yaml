@@ -1,0 +1,170 @@
+# The Gateway (section 5): the only public entry point, exposed on NodePort 30080 (kind maps
+# it to 127.0.0.1:30080). Two replicas: rate-limit buckets live in Redis, not in the process.
+# JWT_SECRET and API_CLIENTS are the development values from docker-compose.yml; a real
+# deployment injects its own Secret.
+# Mirrors docker-compose.yml service `gateway` (tests/unit/k8sManifests.test.ts checks every
+# variable). Waits for the same dependencies as its Compose depends_on, with init containers.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: payment-switch
+data:
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  OTEL_SERVICE_NAME: gateway
+  LOG_LEVEL: info
+  HTTP_PORT: '8080'
+  JWT_TTL_SECONDS: '900'
+  REDIS_URL: redis://redis:6379
+  RATE_LIMIT_RPS: '100'
+  RATE_LIMIT_BURST: '200'
+  ORCHESTRATOR_ADDR: orchestrator:50051
+  ORCHESTRATOR_TIMEOUT_MS: '10000'
+  MAX_TRANSFER_AMOUNT: '10000000'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: payment-switch
+type: Opaque
+stringData:
+  JWT_SECRET: dev-only-jwt-secret-change-me-0123456789abcdef
+  API_CLIENTS: >-
+    [{"client_id":"demo-client","client_secret":"demo-secret"},
+    {"client_id":"test-client-a","client_secret":"test-secret-a-dev-only"},
+    {"client_id":"test-client-b","client_secret":"test-secret-b-dev-only"},
+    {"client_id":"test-ratelimit","client_secret":"test-secret-rl-dev-only"}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      nodePort: 30080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/part-of: payment-switch
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        # The image's own `node` user.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-redis
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          command: ['sh', '-c', 'until nc -z -w 2 redis 6379; do echo waiting for redis:6379; sleep 2; done']
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+        - name: wait-for-orchestrator
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          command:
+            [
+              'sh',
+              '-c',
+              'until wget -q -O /dev/null -T 2 http://orchestrator:9101/readyz; do echo waiting for orchestrator ready; sleep 2; done',
+            ]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+      containers:
+        - name: gateway
+          # One image for every service (the repository Dockerfile); SERVICE picks the entry point.
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: gateway
+            - secretRef:
+                name: gateway
+          env:
+            - name: SERVICE
+              value: gateway
+          ports:
+            - name: http
+              containerPort: 8080
+          # /healthz answers once migrations have run and the servers listen.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']

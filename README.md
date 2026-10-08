@@ -159,6 +159,28 @@ traces at <http://localhost:16686> (Jaeger: pick the service `gateway`), and raw
 `npm run stack:down` stops everything and deletes the volumes, so every database is
 reset.
 
+### On Kubernetes (kind)
+
+The same stack runs on a local kind cluster (phase 2, item 6, `ADR-030`), with two
+Orchestrators, two Gateways and network policies that let each database accept only its
+owner. It needs `kind` and `kubectl`, and can run next to the Compose stack.
+
+```bash
+npm run k8s:up       # create the cluster, build and load the image, apply deploy/k8s (~3 min)
+npm run test:k8s     # isolation, the HTTP paths, an Orchestrator SIGKILL, I1-I10
+npm run k8s:down     # delete the cluster and its volumes
+```
+
+The Gateway listens on `127.0.0.1:30080`, and nothing else leaves the cluster. To seed the
+demo accounts, forward the two banks (`kubectl port-forward` is not subject to the network
+policies), then run the curl examples above against port 30080:
+
+```bash
+kubectl --context kind-payment-switch -n payment-switch port-forward svc/bank-a 60061:50061 &
+kubectl --context kind-payment-switch -n payment-switch port-forward svc/bank-b 60062:50062 &
+BANK_A_GRPC_ADDR=127.0.0.1:60061 BANK_B_GRPC_ADDR=127.0.0.1:60062 npm run seed
+```
+
 ## 4. How correctness is proven
 
 Seven invariants are checked against a baseline snapshot taken before each run:
@@ -415,3 +437,10 @@ Five lines after each milestone, each one explainable out loud without notes.
 3. Background polling (recovery, the outbox relay, the reconciliation scheduler) creates no traces of its own: Postgres spans are recorded only inside a request, so real traces are not buried.
 4. Prometheus scrapes all seven services, and a committed Grafana dashboard shows throughput, latency, in-flight transfers, recovery activity and injected chaos.
 5. The dashboard is tested: a unit test fails on any panel that queries a metric no service defines (a misspelt metric was caught by name), and an integration test runs every panel's query against the live Prometheus.
+
+**P2-6 — Kubernetes manifests** (phase 2)
+1. The whole stack runs on a local kind cluster from plain manifests: one Postgres per service, Kafka and Redis, and the six services, with two Orchestrators so the multi-instance design (leases, `SKIP LOCKED`, compare-and-set) finally runs as more than one process.
+2. A unit test parses `docker-compose.yml` and the manifests and requires them to agree value for value: every variable, port, health check and start-up dependency. Seven deliberate drifts each failed it.
+3. Network policies make "a database per service" a rule the cluster enforces, not just one the code follows: each Postgres accepts only its owning service. The test shows a foreign database unreachable, and fails when the policies are removed.
+4. Killing the Orchestrator that held 200 in-flight transfers left recovery on another instance to finish all 200, and every invariant (I1–I10) held. The first attempt showed that `kubectl delete --force` is not a crash, because the pod still shuts down gracefully, so the test now SIGKILLs the process itself.
+5. CI builds the cluster with a pinned, checksum-verified kind and a node image pinned by digest, then runs the same Kubernetes tests.

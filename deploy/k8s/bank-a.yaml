@@ -1,0 +1,151 @@
+# Mock Bank A (section 8). One replica: the chaos engine's settings (SetChaos) live in
+# the process, so a second replica would answer with different chaos.
+# Mirrors docker-compose.yml service `bank-a` (tests/unit/k8sManifests.test.ts checks every
+# variable). Waits for the same dependencies as its Compose depends_on, with init containers.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bank-a
+  labels:
+    app.kubernetes.io/name: bank-a
+    app.kubernetes.io/part-of: payment-switch
+data:
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  OTEL_SERVICE_NAME: bank-a
+  LOG_LEVEL: info
+  BANK_ID: bank_a
+  GRPC_PORT: '50061'
+  HTTP_PORT: '9111'
+  CHAOS_SEED: '42'
+  CHAOS_DOWN: 'false'
+  CHAOS_LATENCY_MIN_MS: '0'
+  CHAOS_LATENCY_MAX_MS: '0'
+  CHAOS_REJECT_RATE: '0'
+  CHAOS_LATE_APPLY_RATE: '0'
+  CHAOS_LOST_RESPONSE_RATE: '0'
+  CHAOS_SLOW_MS: '3000'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bank-a
+  labels:
+    app.kubernetes.io/name: bank-a
+    app.kubernetes.io/part-of: payment-switch
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://banks:banks@postgres-banks:5432/bank_a
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-a
+  labels:
+    app.kubernetes.io/name: bank-a
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  selector:
+    app.kubernetes.io/name: bank-a
+  ports:
+    - name: grpc
+      port: 50061
+      targetPort: grpc
+      appProtocol: grpc
+    - name: http
+      port: 9111
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bank-a
+  labels:
+    app.kubernetes.io/name: bank-a
+    app.kubernetes.io/part-of: payment-switch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bank-a
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bank-a
+        app.kubernetes.io/part-of: payment-switch
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        # The image's own `node` user.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres-banks
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          command:
+            ['sh', '-c', 'until nc -z -w 2 postgres-banks 5432; do echo waiting for postgres-banks:5432; sleep 2; done']
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+      containers:
+        - name: bank-a
+          # One image for every service (the repository Dockerfile); SERVICE picks the entry point.
+          image: payment-switch:dev
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: bank-a
+            - secretRef:
+                name: bank-a
+          env:
+            - name: SERVICE
+              value: mockBank
+          ports:
+            - name: grpc
+              containerPort: 50061
+            - name: http
+              containerPort: 9111
+          # /healthz answers once migrations have run and the servers listen.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
