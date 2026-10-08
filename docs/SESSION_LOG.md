@@ -1513,3 +1513,11 @@ that names an owner: 200 of 200. A reporting fix only; the invariants held in ev
 **Next action:** when P2-4 is on `main`, rebase the scratch commit onto `main`, move
 `claude/p2-6-kubernetes` to it (`--force-with-lease`, my own PR branch), let CI run, merge
 fast-forward, rerun the checks in the main checkout, push `main`.
+
+**P2-6 merged (2026-10-08).** Rebased onto `main` = `f13b27d` (P2-4 `DONE`); one conflict, the
+PROGRESS status rows. CI run 37779798935 on `c50506a`: `static`, `integration`, `k8s` (5 min 21 s)
+green. Local acceptance on the same commit: fresh cluster 5 min 51 s, 20 pods, `test:k8s` 9/9,
+I1–I10 (that run's victim held 11 leases when killed; 51 transfers finished by another instance,
+200 by recovery). `main` fast-forwarded to `c50506a`; build, lint, typecheck and unit 781/781 green
+in the main checkout. The P2-5 session rebases onto it and mirrors `SNAPSHOT_INTERVAL_MS` and
+`SNAPSHOT_LOCK_TIMEOUT_MS` into `deploy/k8s/ledger.yaml` (the parity test will ask for them).

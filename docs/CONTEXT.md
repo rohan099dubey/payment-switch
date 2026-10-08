@@ -16,7 +16,7 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **P2-5** (ledger balance snapshots): another session. **P2-6** (Kubernetes, optional; branch `claude/p2-6-kubernetes`, PR #4): every box ticked, rebased onto `main` with P2-4 mirrored; merging. Phase 1 and P2-1 to P2-4 are `DONE` |
+| **Active milestone** | **P2-5** (ledger balance snapshots): another session. Phase 1 and P2-1 to P2-4 and **P2-6** (Kubernetes, `ADR-030`) are `DONE`. A Compose change must also land in `deploy/k8s`: `tests/unit/k8sManifests.test.ts` fails until it does |
 | **Definition of done** | **8 of 8 — phase 1 complete** (2026-10-07; the last box confirmed by the owner) |
 | **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. All three jobs green on `c5a82c1`. The first `nightly` found a real bug, fixed in ADR-024 |
 | **Next action** | Read the **last SESSION_LOG entry**: its numbered next actions are the plan. Then P2-5 (ledger snapshots, ADR-029) |
