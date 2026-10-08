@@ -210,6 +210,15 @@ describe('the stack on Kubernetes (ADR-030)', () => {
       const victim = holders[0]?.instance ?? '';
       const pid = pids.get(victim);
       if (pid === undefined) throw new Error(`lease holder ${victim} is not a known Orchestrator pod`);
+      // The transfers the victim is driving at the moment it dies: the ones another instance
+      // has to finish.
+      const held = (
+        await stack.orchDb.query<{ id: string }>(
+          `SELECT id FROM transfers WHERE idempotency_key LIKE $1 || '%'
+            AND split_part(lease_owner, ':', 1) = $2 AND lease_expires_at > now()`,
+          [RUN, victim],
+        )
+      ).rows.map((r) => r.id);
       await crashPod(victim, pid);
       const answers = await Promise.all(sends);
 
@@ -224,14 +233,15 @@ describe('the stack on Kubernetes (ADR-030)', () => {
       );
 
       const report = await evaluate(stack, baseline, RUN);
+      // Of the transfers the victim held, those whose last recorded driver is another instance.
+      // (A first version counted only transfers with an event from the victim; most held
+      // transfers had none yet, so it read 1 of 20 on a slow runner.)
       const takeover = await stack.orchDb.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM transfers t
-          WHERE t.idempotency_key LIKE $1 || '%'
-            AND EXISTS (SELECT 1 FROM transfer_events e WHERE e.transfer_id = t.id
-                         AND split_part(e.detail->>'lease_owner', ':', 1) = $2)
+          WHERE t.id = ANY($1::uuid[])
             AND (SELECT split_part(e.detail->>'lease_owner', ':', 1) FROM transfer_events e
                   WHERE e.transfer_id = t.id AND e.detail->>'lease_owner' IS NOT NULL ORDER BY e.id DESC LIMIT 1) <> $2`,
-        [RUN, victim],
+        [held, victim],
       );
       const recovered = await stack.orchDb.query<{ n: number }>(
         `SELECT count(DISTINCT e.transfer_id)::int AS n FROM transfer_events e JOIN transfers t ON t.id = e.transfer_id
@@ -243,6 +253,7 @@ describe('the stack on Kubernetes (ADR-030)', () => {
           sent: TRANSFERS,
           killed: victim,
           leasesHeld: holders,
+          victimHeld: held.length,
           http: countBy(answers, (a) => String(a.status)),
           registered: report.transfers.length,
           final: countBy(report.transfers, (t) => t.state),
