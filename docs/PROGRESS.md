@@ -23,7 +23,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | P2-1 | Transactional outbox & Kafka (phase 2, §19 item 1) | `DONE` | 6, 19 (+ ADR-025) | 2026-10-07 | see `git log --grep "P2-1"` |
 | P2-2 | Notification service (phase 2, §19 item 2) | `DONE` | 19 (+ ADR-025, ADR-026) | 2026-10-07 | see `git log --grep "P2-2"` |
 | P2-3 | Reconciliation service (phase 2, §19 item 3) | `DONE` | 7, 8, 9, 19 (+ ADR-027) | 2026-10-07 | see `git log --grep "P2-3"` |
-| P2-4 | Tracing & dashboards (phase 2, §19 item 4) | `IN_PROGRESS` | 17, 19 (+ ADR-028) | — | — |
+| P2-4 | Tracing & dashboards (phase 2, §19 item 4) | `DONE` | 17, 19 (+ ADR-028) | 2026-10-08 | see `git log --grep "P2-4"` |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
 Most of the work is in **M3, M5 and M6**.
@@ -435,4 +435,4 @@ Acceptance
 - [x] The 10,000-transfer test passes twice with different seeds, I1–I10, with tracing on (seed 1: 9,471 / 519 / 10; seed 2: 9,400 / 526 / 74; 0 manual review)
 - [x] `npm run invariants` green after the runs (`--since 2026-10-07T13:10:06Z`: 20,453 transfers, I1–I6 and I8–I10 hold)
 - [x] The cost of tracing measured with k6 and recorded in `docs/benchmarks.md` ("Tracing cost"): 4 rows at 50/s, alternating off / on / off / on after recreate, `VACUUM ANALYZE` and a 90 s warm-up, 0 errors, invariants green after each. Tracing adds **+26 % CPU per transfer** (19.6 to 24.8 ms across the services; Orchestrator 10.0 to 12.5 ms) and about **+8 ms p50**. The earlier confounded pair is explained: cold start after a recreate
-- [ ] CI green on GitHub
+- [x] CI green on GitHub: PR rohan099dubey/payment-switch#5 (`static`, `integration` on `7530c57`; the first runs failed the Gateway burst test, a test that was borderline by design, fixed in ADR-019 amendment 2); `nightly` run 37776725804 (seed 1: 9,469 / 519 / 12; seed 2: 9,407 / 525 / 68; tracing on; unscoped invariants on the fresh CI stack: 20,108 transfers, I1–I10 hold)
