@@ -48,6 +48,11 @@ Compose as Compose changes.
   a crash: it removes the API object, the kubelet still sends SIGTERM, and the Orchestrator's
   graceful shutdown finishes the in-flight transfers. The first run showed exactly that
   (200 × `201`, nothing for recovery to do), and the takeover assertion caught it.
+- **When** to kill matters too. Choosing the victim 1 s after sending was flaky on GitHub's
+  2-CPU runner: the victim held 2 leases, both finished during the second-long `crictl` lookup,
+  and nothing was left to take over (run on `f8960e4`). The test now resolves both
+  Orchestrators' PIDs before sending, waits until one holds at least 20 live leases, and kills
+  it at once.
 - gRPC multiplexes requests over one HTTP/2 connection, so a ClusterIP Service balances
   connections, not requests: each Gateway pod sticks to one Orchestrator. In the measured runs
   all 200 in-flight transfers sat on one instance. Request-level balancing (client-side

@@ -63,19 +63,31 @@ export async function execIn(pod: string, script: string): Promise<number> {
 }
 
 /**
+ * The host PID (in the kind node's PID namespace) of a pod's container. Resolved ahead of a
+ * crash: the `crictl` lookups take about a second, long enough for in-flight work to finish
+ * before the kill lands, which made the crash test flaky on a slow CI runner (ADR-030).
+ */
+export async function containerPid(pod: string, container: string): Promise<number> {
+  const script = [
+    'set -e',
+    `p=$(crictl pods --name '^${pod}$' --state ready -q)`,
+    `c=$(crictl ps --pod "$p" --name '^${container}$' -q)`,
+    `crictl inspect --output go-template --template '{{.info.pid}}' "$c"`,
+  ].join('; ');
+  const { stdout } = await run('docker', ['exec', KIND_NODE, 'sh', '-c', script], { timeout: 30_000 });
+  const pid = Number(stdout.trim());
+  if (!Number.isInteger(pid) || pid <= 1) throw new Error(`no container PID for ${pod}/${container}: ${stdout}`);
+  return pid;
+}
+
+/**
  * A crash, the Kubernetes analogue of `docker compose kill`: SIGKILL the container's process
  * from the kind node, then force-delete the pod so its replacement has a new name (a new
  * `INSTANCE_ID`). `kubectl delete --force --grace-period=0` alone is **not** a crash: it only
  * removes the API object, and the kubelet still sends SIGTERM, so a graceful shutdown
  * finishes the in-flight work (observed on the first run, ADR-030).
  */
-export async function crashPod(pod: string, container: string): Promise<void> {
-  const script = [
-    'set -e',
-    `p=$(crictl pods --name '^${pod}$' --state ready -q)`,
-    `c=$(crictl ps --pod "$p" --name '^${container}$' -q)`,
-    `kill -9 "$(crictl inspect --output go-template --template '{{.info.pid}}' "$c")"`,
-  ].join('; ');
-  await run('docker', ['exec', KIND_NODE, 'sh', '-c', script], { timeout: 30_000 });
+export async function crashPod(pod: string, pid: number): Promise<void> {
+  await run('docker', ['exec', KIND_NODE, 'kill', '-9', String(pid)], { timeout: 30_000 });
   await kubectl('delete', 'pod', pod, '--grace-period=0', '--force', '--wait=false');
 }
