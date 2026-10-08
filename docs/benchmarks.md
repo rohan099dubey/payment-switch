@@ -80,3 +80,52 @@ client, iterations spread over four API clients, ADR-022).
   instances, which the design already supports (leases, `SKIP LOCKED`, CAS), behind
   round-robin gRPC load balancing in the Gateway; or fewer Postgres round trips per
   state change. Neither was tried, so no number is claimed for them.
+
+## Tracing cost (P2-4, ADR-028)
+
+Measured 2026-10-08 on machine A, commit `0d30bb5` (the images were built from that source),
+with the whole phase 2 stack running: 17 containers (the nine above plus Kafka, the
+notification and reconciliation services with their Postgres, Jaeger, Prometheus and
+Grafana). Same k6 scenario and accounts as above, chaos **off**, at **50/s**, a rate both
+modes sustain. "Tracing on" is the Compose default (every request traced, exported to
+Jaeger). "Off" sets `OTEL_SDK_DISABLED=true` on the seven services, with the same images.
+
+Method, the same for every run, alternating off / on / off / on: force-recreate the seven
+services; `VACUUM ANALYZE` the Orchestrator, Ledger and both bank databases; a 90 s warm-up
+at 50/s; a 20 s pause; then the measured 2 minutes. Each run's invariants were checked from
+the start of its warm-up (4,500 warm-up plus 6,000 measured transfers).
+
+| Date | Machine | Commit | Config | RPS | p50 | p95 | p99 | Error rate | Invariants green |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-08 | A | `0d30bb5` | 50/s, tracing **off** (run 1) | **49.97** (none dropped) | 53.9 ms | 80.8 ms | 106.5 ms | 0.00 % (0 of 6,004) | yes: 10,500 transfers, I1–I6, I8–I10 |
+| 2026-10-08 | A | `0d30bb5` | 50/s, tracing **on** (run 2) | **49.98** (none dropped) | 59.6 ms | 82.6 ms | 95.7 ms | 0.00 % (0 of 6,004) | yes: 10,500 transfers, I1–I6, I8–I10 |
+| 2026-10-08 | A | `0d30bb5` | 50/s, tracing **off** (run 3) | **49.98** (none dropped) | 49.7 ms | 73.0 ms | 83.9 ms | 0.00 % (0 of 6,005) | yes: 10,502 transfers, I1–I6, I8–I10 |
+| 2026-10-08 | A | `0d30bb5` | 50/s, tracing **on** (run 4) | **49.97** (none dropped) | 60.6 ms | 86.7 ms | 102.1 ms | 0.00 % (0 of 6,005) | yes: 10,502 transfers, I1–I6, I8–I10 |
+
+CPU time per transfer in the measured window: each service's `process_cpu_seconds_total`
+increase divided by the `transfers_total` increase, read from Prometheus at the window's
+edges (Jaeger's own CPU is not included; `docker stats` sampled it at 2–9 % of a core).
+
+| Run | Gateway | Orchestrator | Ledger | Bank A | Bank B | Notification | Reconciliation | **Total** |
+|---|---|---|---|---|---|---|---|---|
+| 1 off | 2.25 ms | 10.32 ms | 3.21 ms | 1.50 ms | 1.50 ms | 1.41 ms | 0.09 ms | **20.30 ms** |
+| 2 on | 2.54 ms | 12.53 ms | 4.20 ms | 1.89 ms | 1.90 ms | 1.43 ms | 0.10 ms | **24.59 ms** |
+| 3 off | 2.17 ms | 9.62 ms | 2.98 ms | 1.43 ms | 1.40 ms | 1.27 ms | 0.09 ms | **18.95 ms** |
+| 4 on | 2.80 ms | 12.48 ms | 4.17 ms | 1.95 ms | 2.03 ms | 1.45 ms | 0.10 ms | **24.97 ms** |
+
+**What tracing costs:** about **+26 % CPU per transfer** across the services (19.6 ms to
+24.8 ms, means of the two pairs) and **+25 % on the Orchestrator** (10.0 ms to 12.5 ms), whose
+single event loop is the bottleneck. The median latency rises by about **8 ms** (51.8 to
+60.1 ms). At 50/s the p95 and p99 do not separate from run-to-run noise. Notification is
+unchanged: it uses Kafka, which is not instrumented, and makes no traced calls.
+
+**Consequence at higher rates:** with tracing on, 75/s is at the Orchestrator's knee. A 75/s
+run on 2026-10-07 (session 4), started 30 s after the services were recreated, saturated the
+Orchestrator (1.0–1.35 CPU-seconds per second, event-loop lag p99 1.34 s) and never cleared
+the backlog left by its cold start: 42.8/s completed, 13 % Gateway `504`s. All 7,313
+transfers still finished correctly through recovery, and I1–I10 held. That run is not a
+row, because its cold start is what decided the result. The same cold-start effect explains
+the inconclusive A/B recorded in `SESSION_LOG.md` (session 3), where the tracing-off run
+came out slower. This is why the method above warms up for 90 s. Phase 1's 75/s and 100/s
+rows were measured without tracing (and before phase 2's services existed); they are not
+comparable with this section.

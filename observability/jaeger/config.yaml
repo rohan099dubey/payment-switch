@@ -1,0 +1,98 @@
+# Jaeger v2 all-in-one configuration (ADR-028, amendment 1).
+#
+# This is the configuration built into jaegertracing/jaeger:2.11.0
+# (cmd/jaeger/internal/all-in-one.yaml at tag v2.11.0) with ONE change: the in-memory store
+# keeps at most 10,000 traces instead of 100,000. Every transfer is one trace of about 64
+# spans, so the default let Jaeger grow past 2.5 GiB inside Docker Desktop's 7.35 GiB VM.
+# Keep everything else identical to upstream when upgrading the image (Prettier changed
+# only the quote style).
+service:
+  extensions: [jaeger_storage, jaeger_query, remote_sampling, healthcheckv2, expvar, zpages]
+  pipelines:
+    traces:
+      receivers: [otlp, jaeger, zipkin]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+  telemetry:
+    resource:
+      service.name: jaeger
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '${env:JAEGER_LISTEN_HOST:-localhost}'
+                port: 8888
+    logs:
+      level: info
+    # TODO Initialize telemetry tracer once OTEL released new feature.
+    # https://github.com/open-telemetry/opentelemetry-collector/issues/10663
+
+extensions:
+  jaeger_query:
+    storage:
+      traces: some_storage
+
+  jaeger_storage:
+    backends:
+      some_storage:
+        memory:
+          max_traces: 10000
+
+  remote_sampling:
+    # We can either use file or adaptive sampling strategy in remote_sampling
+    file:
+      path:
+      default_sampling_probability: 1
+      reload_interval: 1s
+    # adaptive:
+    #   sampling_store: some_store
+    #   initial_sampling_probability: 0.1
+    http:
+      endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:5778'
+    grpc:
+      endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:5779'
+
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:13133'
+    grpc:
+
+  expvar:
+    endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:27777'
+
+  zpages:
+    # for some reason the official extension listens on ephemeral port 55679
+    # so we override it with a normal port
+    endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:27778'
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:4317'
+      http:
+        endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:4318'
+
+  jaeger:
+    protocols:
+      grpc:
+        endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:14250'
+      thrift_http:
+        endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:14268'
+      thrift_binary:
+        endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:6832'
+      thrift_compact:
+        endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:6831'
+
+  zipkin:
+    endpoint: '${env:JAEGER_LISTEN_HOST:-localhost}:9411'
+
+processors:
+  batch:
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: some_storage

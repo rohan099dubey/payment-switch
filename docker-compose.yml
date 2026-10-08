@@ -236,6 +236,9 @@ services:
   # not payments.
   jaeger:
     image: jaegertracing/jaeger:2.11.0
+    command: ['--config', '/etc/jaeger/config.yaml']
+    volumes:
+      - ./observability/jaeger/config.yaml:/etc/jaeger/config.yaml:ro
     ports:
       - '16686:16686' # UI and query API
       - '4318:4318' # OTLP over HTTP
