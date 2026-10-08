@@ -117,26 +117,26 @@ export class GatewayClient {
   }
 
   /**
-   * `GET /v1/transfers/{id}` for every id at once, over at most `connections` keep-alive
-   * connections. A burst test needs the requests to reach the Gateway faster than its
-   * bucket refills. One new connection per request makes the arrival rate depend on how
-   * fast Docker's published-port proxy accepts connections, which on Docker Desktop and on
-   * a CI runner is slow enough to let the bucket keep up (ADR-019, amendment 2). No retry:
-   * a burst that loses a request fails the test instead.
+   * `count` authenticated requests at once, over at most `connections` keep-alive
+   * connections, with no body and no retry (a lost request fails the caller's test). A
+   * burst test needs its requests to reach the Gateway faster than the bucket refills, so
+   * it uses the cheapest request the limiter sees and keeps connection setup out of the
+   * way: one new connection per request makes the arrival rate depend on Docker's
+   * published-port proxy (ADR-019, amendment 2).
    */
-  async getTransfersOverPool(ids: readonly string[], connections: number): Promise<HttpResult[]> {
+  async burstOverPool(method: string, path: string, count: number, connections: number): Promise<HttpResult[]> {
     const authorization = `Bearer ${await this.accessToken()}`;
     const agent = new http.Agent({ keepAlive: true, maxSockets: connections });
     const url = new URL(GATEWAY_URL);
-    const one = (id: string): Promise<HttpResult> =>
+    const one = (): Promise<HttpResult> =>
       new Promise((resolve, reject) => {
         const req = http.request(
           {
             agent,
             host: url.hostname,
             port: url.port,
-            method: 'GET',
-            path: `/v1/transfers/${encodeURIComponent(id)}`,
+            method,
+            path,
             headers: { authorization },
             timeout: REQUEST_TIMEOUT_MS,
           },
@@ -163,7 +163,7 @@ export class GatewayClient {
         req.end();
       });
     try {
-      return await Promise.all(ids.map(one));
+      return await Promise.all(Array.from({ length: count }, one));
     } finally {
       agent.destroy();
     }
