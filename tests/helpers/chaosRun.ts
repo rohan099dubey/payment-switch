@@ -12,6 +12,7 @@ import {
   awaitOutboxPublished,
   checkI9,
   checkI10,
+  checkI11,
   loadNotificationFacts,
   loadOpenBreakRefs,
   readQuery,
@@ -240,6 +241,8 @@ export async function evaluate(
     outbox,
     notified,
     reconciled,
+    // I11 (ADR-029): the snapshots taken during the run, under load, match their entries.
+    await checkI11(stack),
   ];
   return { results, transfers };
 }

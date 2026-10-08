@@ -149,6 +149,8 @@ services:
       GRPC_PORT: '50052'
       HTTP_PORT: '9102'
       DATABASE_URL: postgres://ledger:ledger@postgres-ledger:5432/ledger_db
+      SNAPSHOT_INTERVAL_MS: '60000'
+      SNAPSHOT_LOCK_TIMEOUT_MS: '200'
     ports:
       - '50052:50052'
       - '9102:9102'

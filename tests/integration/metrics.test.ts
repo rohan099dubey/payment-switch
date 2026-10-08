@@ -68,7 +68,12 @@ const SERVICES: { service: string; url: string; metrics: Expected[] }[] = [
   {
     service: 'ledger',
     url: process.env.LEDGER_HTTP_URL ?? 'http://localhost:9102',
-    metrics: [...GRPC, { name: 'journals_posted_total', type: 'counter', labels: ['kind', 'replayed'] }],
+    metrics: [
+      ...GRPC,
+      { name: 'journals_posted_total', type: 'counter', labels: ['kind', 'replayed'] },
+      // Phase 2, item 5 (ADR-029).
+      { name: 'balance_snapshots_total', type: 'counter', labels: ['result'] },
+    ],
   },
   ...(['a', 'b'] as const).map((b) => ({
     service: `bank-${b}`,

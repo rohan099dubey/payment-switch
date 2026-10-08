@@ -183,7 +183,7 @@ BANK_A_GRPC_ADDR=127.0.0.1:60061 BANK_B_GRPC_ADDR=127.0.0.1:60062 npm run seed
 
 ## 4. How correctness is proven
 
-Seven invariants are checked against a baseline snapshot taken before each run:
+Eleven invariants are checked against a baseline taken before each run (I8 to I11 came with phase 2):
 
 | | |
 |---|---|
@@ -197,11 +197,12 @@ Seven invariants are checked against a baseline snapshot taken before each run:
 | **I8** | Every finished transfer has exactly one outbox event of the matching type, and none stays unpublished (phase 2, [ADR-025](docs/decisions/ADR-025-outbox-and-kafka.md)) |
 | **I9** | Every published event has exactly one notification outcome: delivered, or dead-lettered when the merchant always fails (phase 2, [ADR-026](docs/decisions/ADR-026-notification-service.md)) |
 | **I10** | Seen from outside: after a reconciliation run, no open break names a transfer the switch made (phase 2, [ADR-027](docs/decisions/ADR-027-reconciliation-service.md)) |
+| **I11** | Every ledger balance snapshot equals the raw sums of the entries it covers, and balance reads equal the raw sums (phase 2, [ADR-029](docs/decisions/ADR-029-ledger-balance-snapshots.md)) |
 
 ```bash
 npm run test:chaos                          # crash recovery + the 10,000-transfer invariant test
 TRANSFER_COUNT=1000 npm run test:chaos      # the CI size
-npm run invariants                          # I1-I6 and I8-I10 against the live stack, every transfer
+npm run invariants                          # I1-I6 and I8-I11 against the live stack, every transfer
 npm run invariants -- --since 2026-10-07T00:00:00Z   # only transfers created since then
 ```
 
@@ -296,6 +297,17 @@ Postgres round trips, with no single hotspot. The design already allows more
 Orchestrator instances (leases, `SKIP LOCKED`, compare-and-set), but that was not built
 or measured, so no number is claimed for it.
 
+**Phase 2 measurements** (2026-10-08, machine A, the full 17-container stack):
+
+- **Tracing costs about 26 % more CPU per transfer** (19.6 to 24.8 ms summed over the
+  services, Orchestrator 10.0 to 12.5 ms) and about 8 ms of median latency at 50/s, from
+  four alternating off/on runs after a warm-up, every one with 0 errors and the invariants
+  green.
+- **Balance snapshots made balance reads cheap:** `GetBalance('transit')` p50 went from
+  87 ms (955,286 entries, no snapshots) to 4.4 ms with a fresh snapshot, and 5.4 ms with
+  about 9,000 entries behind a snapshot during a 50/s load. `GetTrialBalance` went from
+  215 ms to 4.3 / 6.6 ms.
+
 ## 7. Design decisions and tradeoffs
 
 The eight decisions the specification makes:
@@ -335,6 +347,7 @@ Where the implementation fills a gap in the specification or deviates from it:
 | [026](docs/decisions/ADR-026-notification-service.md) | Notification service (phase 2): its own database, a dedupe table keyed by event id, a deterministic simulated webhook, 5 attempts then the dead-letter topic |
 | [027](docs/decisions/ADR-027-reconciliation-service.md) | Reconciliation (phase 2): legs matched by (bank, reference, operation), paged `GetStatement`, an added read-only ledger range query, a settle lag, breaks that open and resolve |
 | [028](docs/decisions/ADR-028-tracing-and-dashboards.md) | Tracing and dashboards (phase 2): an OTel bootstrap imported first, `pg` spans only inside requests, Jaeger 2.11, Prometheus 3.7, Grafana 12.2 with a dashboard tested against the real metrics |
+| [029](docs/decisions/ADR-029-ledger-balance-snapshots.md) | Ledger balance snapshots (phase 2): immutable checkpoints, not a running balance; a provably safe cut under a brief bounded lock; reads sum only later entries; invariant I11 |
 
 ## 8. What I built and why
 
@@ -437,6 +450,13 @@ Five lines after each milestone, each one explainable out loud without notes.
 3. Background polling (recovery, the outbox relay, the reconciliation scheduler) creates no traces of its own: Postgres spans are recorded only inside a request, so real traces are not buried.
 4. Prometheus scrapes all seven services, and a committed Grafana dashboard shows throughput, latency, in-flight transfers, recovery activity and injected chaos.
 5. The dashboard is tested: a unit test fails on any panel that queries a metric no service defines (a misspelt metric was caught by name), and an integration test runs every panel's query against the live Prometheus.
+
+**P2-5 — Ledger balance snapshots** (phase 2)
+1. Balances are still derived from the append-only entries, but the ledger now writes an immutable snapshot every minute, so a balance read sums only the entries after it: `GetBalance` on the busiest account went from 87 ms to about 5 ms.
+2. A snapshot is a checkpoint, never a running balance: it is written once, the database forbids changing or deleting it, and it must balance and cover every account before it can commit.
+3. Entry ids are assigned when a row is inserted, not when it commits, so "everything up to id N" is not a safe cut by itself. The snapshot briefly locks out new postings (bounded by a 200 ms timeout) until the in-flight ones finish, which makes the cut provable.
+4. A new invariant, I11, recomputes every snapshot independently from the raw entries. Three planted bugs (no lock, dropped totals, an off-by-one read) were each caught, run on a throwaway stack because a wrong snapshot on a shared database would be permanent.
+5. Testing on an empty database found a real bug that six-digit ids had hidden: a text-typed column sorted '982' above '2414'.
 
 **P2-6 — Kubernetes manifests** (phase 2)
 1. The whole stack runs on a local kind cluster from plain manifests: one Postgres per service, Kafka and Redis, and the six services, with two Orchestrators so the multi-instance design (leases, `SKIP LOCKED`, compare-and-set) finally runs as more than one process.

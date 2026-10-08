@@ -261,6 +261,12 @@ describe('checkI9 (notifications, ADR-026)', () => {
     expect(checkI9([fact({ payeeAccountId: 'whfail-x' })]).ok).toBe(false);
     expect(checkI9([fact({ attempts: 6 })]).ok).toBe(false);
   });
+
+  it('reports an event whose payload has no payee instead of crashing', () => {
+    const r = checkI9([fact(), fact({ eventId: '2', payeeAccountId: null })]);
+    expect(r.ok).toBe(false);
+    expect(r.problems).toEqual(['event 2 (t1): payload has no payee']);
+  });
 });
 
 describe('checkI10 (reconciliation, ADR-027)', () => {

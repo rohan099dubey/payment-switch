@@ -24,6 +24,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | P2-2 | Notification service (phase 2, §19 item 2) | `DONE` | 19 (+ ADR-025, ADR-026) | 2026-10-07 | see `git log --grep "P2-2"` |
 | P2-3 | Reconciliation service (phase 2, §19 item 3) | `DONE` | 7, 8, 9, 19 (+ ADR-027) | 2026-10-07 | see `git log --grep "P2-3"` |
 | P2-4 | Tracing & dashboards (phase 2, §19 item 4) | `DONE` | 17, 19 (+ ADR-028) | 2026-10-08 | see `git log --grep "P2-4"` |
+| P2-5 | Ledger balance snapshots (phase 2, §19 item 5) | `IN_PROGRESS` | 7, 10, 19 (+ ADR-029) | — | — |
 | P2-6 | Kubernetes manifests (phase 2, §19 item 6, optional) | `DONE` | 15, 19 (+ ADR-030) | 2026-10-08 | see `git log --grep "P2-6"` |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
@@ -437,6 +438,29 @@ Acceptance
 - [x] `npm run invariants` green after the runs (`--since 2026-10-07T13:10:06Z`: 20,453 transfers, I1–I6 and I8–I10 hold)
 - [x] The cost of tracing measured with k6 and recorded in `docs/benchmarks.md` ("Tracing cost"): 4 rows at 50/s, alternating off / on / off / on after recreate, `VACUUM ANALYZE` and a 90 s warm-up, 0 errors, invariants green after each. Tracing adds **+26 % CPU per transfer** (19.6 to 24.8 ms across the services; Orchestrator 10.0 to 12.5 ms) and about **+8 ms p50**. The earlier confounded pair is explained: cold start after a recreate
 - [x] CI green on GitHub: PR rohan099dubey/payment-switch#5 (`static`, `integration` on `7530c57`; the first runs failed the Gateway burst test, a test that was borderline by design, fixed in ADR-019 amendment 2); `nightly` run 37776725804 (seed 1: 9,469 / 519 / 12; seed 2: 9,407 / 525 / 68; tracing on; unscoped invariants on the fresh CI stack: 20,108 transfers, I1–I10 hold)
+
+## P2-5 — Ledger balance snapshots (phase 2, §19 item 5)
+
+**Scope:** periodic snapshot rows so `GetBalance` reads only the entries after the latest
+snapshot; the ledger stays append-only and balances stay derived. Details: `ADR-029`.
+
+Implementation
+- [x] Ledger migration `0005_balance_snapshots.sql`: `balance_snapshots` + `balance_snapshot_lines` (append-only and no-truncate triggers; a deferred trigger requires one line per account and balanced totals); covering index `entries (account_id, id) INCLUDE (direction, amount)`
+- [x] `repo/snapshotRepo.ts`: the cut under a brief `SHARE` lock on `entries` (bounded by `SNAPSHOT_LOCK_TIMEOUT_MS`), then an incremental snapshot under an advisory lock; `up_to_date` / `lock_timeout` outcomes
+- [x] `repo/balanceRepo.ts`: `GetBalance` and `GetTrialBalance` read the latest snapshot plus later entries (no snapshot: the old full sum)
+- [x] `snapshotter.ts`: a round every `SNAPSHOT_INTERVAL_MS` (60 s), never overlapping, stopped on SIGTERM; metric `balance_snapshots_total{result}`; config, `.env.example`, Compose, and `deploy/k8s/ledger.yaml` (Compose parity, checked by `k8sManifests.test.ts`; Kubernetes runs two Ledgers, so two snapshotters, which ADR-029 allows for)
+- [x] Invariant **I11** in the shared helpers (every snapshot equals its entries; `GetTrialBalance` equals the raw sums): both chaos tests and `npm run invariants`
+- [x] `npm run bench:balance` (`scripts/benchBalance.ts`)
+
+Acceptance
+- [x] Unit (`services/ledger/test/snapshotter.test.ts`, 4): every outcome counted, a failure does not stop the schedule, no overlapping rounds, clean stop; config defaults and limits
+- [x] Integration (`tests/integration/ledgerSnapshots.test.ts`, 5): I11 after back-to-back snapshots during 600 concurrent postings; the plan reads exactly the entries after the latest snapshot; UPDATE / DELETE / TRUNCATE rejected; unbalanced / incomplete / empty snapshots rejected (always rolled back); a writer facing an in-flight posting times out instead of covering it. Green on the development stack and on an empty database
+- [x] Mutants in a throwaway Compose project: no lock (caught 3/3), dropped previous totals (caught), `>=` in the read path (caught). An empty database also caught a real ORDER-BY-text bug, fixed
+- [x] Measured (`docs/benchmarks.md`, "Balance snapshots"): `GetBalance('transit')` p50 87 ms → 4.4 ms (fresh snapshot) / 5.4 ms (9k entries behind, under load); `GetTrialBalance` 215 ms → 4.3 / 6.6 ms; invariants incl. I11 green after the load run
+- [x] Full integration suite green: 222/222 in 15 files on a clean-room stack (`COMPOSE_PROJECT_NAME=payment-switch-fresh`, ADR-023). On the development stack 215/222: the other 7 time out waiting for "no transfer in flight" because of transfer `4bad8053`, stuck by test interference (SESSION_LOG, session 4)
+- [x] The 10,000-transfer test passes twice with different seeds, with **I11** holding (clean-room stack; seed 1: 9,468 / 520 / 12; seed 2: 9,402 / 525 / 73; I1–I11, 0 manual review; I11 over 74–78 snapshots taken under load; crash recovery 200/200 with I11 each)
+- [x] `npm run invariants` green after the runs (clean-room stack, unscoped: 20,488 transfers, I1–I6 and I8–I11 hold, 78 snapshots)
+- [ ] CI green on GitHub
 
 ## P2-6 — Kubernetes manifests (phase 2, §19 item 6, optional)
 

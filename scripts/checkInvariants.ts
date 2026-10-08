@@ -21,6 +21,7 @@ import {
   checkI8,
   checkI9,
   checkI10,
+  checkI11,
   loadNotificationFacts,
   loadOpenBreakRefs,
   loadOutboxFacts,
@@ -122,9 +123,18 @@ async function main(): Promise<number> {
     } finally {
       await reconDb.end();
     }
-    const results = [await checkI1(deps), i2, i3, i4, checkI5(evidence), checkI6(transfers), i8, i9, i10].filter(
-      (r) => r !== undefined,
-    );
+    const results = [
+      await checkI1(deps),
+      i2,
+      i3,
+      i4,
+      checkI5(evidence),
+      checkI6(transfers),
+      i8,
+      i9,
+      i10,
+      await checkI11(deps),
+    ].filter((r) => r !== undefined);
     process.stdout.write(`${formatResults(results)}\n`);
     const ok = results.every((r) => r.ok);
     process.stdout.write(ok ? 'all invariants hold\n' : 'INVARIANTS VIOLATED\n');

@@ -16,7 +16,7 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **P2-5** (ledger balance snapshots): another session. Phase 1 and P2-1 to P2-4 and **P2-6** (Kubernetes, `ADR-030`) are `DONE`. A Compose change must also land in `deploy/k8s`: `tests/unit/k8sManifests.test.ts` fails until it does |
+| **Active milestone** | **P2-5** (branch `claude/p2-5-ledger-snapshots`, PR #6): implemented and verified on a clean-room stack; CI open. Phase 1, P2-1 to P2-4 and **P2-6** (Kubernetes, `ADR-030`) are `DONE`. A Compose change must also land in `deploy/k8s` (`tests/unit/k8sManifests.test.ts` checks parity) |
 | **Definition of done** | **8 of 8 — phase 1 complete** (2026-10-07; the last box confirmed by the owner) |
 | **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. All three jobs green on `c5a82c1`. The first `nightly` found a real bug, fixed in ADR-024 |
 | **Next action** | Read the **last SESSION_LOG entry**: its numbered next actions are the plan. Then P2-5 (ledger snapshots, ADR-029) |
@@ -44,7 +44,7 @@ speaks HTTP to the outside; everything internal is gRPC.
 |---|---|---|---|
 | Gateway | HTTP 8080 | nothing durable (Redis = rate-limit buckets only) | Orchestrator |
 | Orchestrator | gRPC 50051, HTTP 9101 | `orchestrator_db`: `transfers`, `transfer_events`, `outbox` | both banks, Ledger; publishes to Kafka (outbox relay) |
-| Ledger | gRPC 50052, HTTP 9102 | `ledger_db`: `accounts`, `journals`, `entries` | nothing (leaf) |
+| Ledger | gRPC 50052, HTTP 9102 | `ledger_db`: `accounts`, `journals`, `entries`, `balance_snapshots` + `balance_snapshot_lines` (P2-5, append-only) | nothing (leaf) |
 | Notification | HTTP 9103 | `notification_db` on `postgres-notification`: `processed_events`, `webhook_attempts` | nothing (consumes `transfer-events`, produces `transfer-events.dlq`) |
 | Reconciliation | gRPC 50053, HTTP 9104 | `reconciliation_db` on `postgres-reconciliation`: `reconciliation_runs`, `reconciliation_breaks` | both banks (`GetStatement`, `GetOperation`), Ledger (`ListJournalsByTime`, `ListJournals`) |
 | Mock Bank A | gRPC 50061, HTTP 9111 | db `bank_a` | nothing |
@@ -148,6 +148,7 @@ Computed against a baseline snapshot taken before each run.
 | **I8** | Outbox (phase 2): every terminal transfer since `0002_outbox.sql` has exactly one event of the matching type; none unpublished once quiet (ADR-025) |
 | **I9** | Notifications (phase 2): every published event has exactly one outcome in `processed_events`, `DELIVERED` unless the payee is a `whfail-` account (ADR-026) |
 | **I10** | Reconciliation (phase 2): after a run covering them, no OPEN break names one of the transfers (ADR-027) |
+| **I11** | Balance snapshots (phase 2): every snapshot equals the raw sums of the entries it covers; `GetTrialBalance` equals the raw sums (ADR-029) |
 
 ## Active deviations from ARCHITECTURE.md
 
@@ -174,6 +175,7 @@ Computed against a baseline snapshot taken before each run.
 | Notification: a dedicated `postgres-notification`, a deterministic simulated webhook (`whfail-` / `whflaky-` payees, a seeded rate), blocking retries 200·2^n ms, a dead letter for malformed messages, invariant I9 | `ADR-026` |
 | Reconciliation: **added** `LedgerService.ListJournalsByTime` and `ReconciliationService.RunReconciliation`; paged `GetStatement` (page_size, page_token); a 120 s settle lag; breaks OPEN to RESOLVED; dedicated `postgres-reconciliation`; invariant I10 | `ADR-027` |
 | Tracing: the OTel bootstrap is the first import in every `main.ts`; `pg` spans only inside requests; always-on sampling (its cost is a separate benchmark row: +26 % CPU per transfer); new top-level `observability/`; Jaeger's store capped at 10,000 traces (amendment 1) | `ADR-028` |
+| Balance snapshots: immutable checkpoints (`balance_snapshots`, append-only), not a running balance; the cut takes a brief `SHARE` lock on `entries` (bounded by `SNAPSHOT_LOCK_TIMEOUT_MS`); a new covering index on `entries`; invariant I11; no proto change | `ADR-029` |
 | Kubernetes (P2-6, optional): kind only, plain manifests + kustomize, one image with `SERVICE` at run time, **added** network policies (database per service enforced), two Orchestrators, a `k8s` test project and CI job. `tests/unit/k8sManifests.test.ts` fails if Compose and the manifests drift | `ADR-030` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.

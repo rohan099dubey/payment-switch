@@ -129,3 +129,27 @@ the inconclusive A/B recorded in `SESSION_LOG.md` (session 3), where the tracing
 came out slower. This is why the method above warms up for 90 s. Phase 1's 75/s and 100/s
 rows were measured without tracing (and before phase 2's services existed); they are not
 comparable with this section.
+
+## Balance snapshots (P2-5, ADR-029)
+
+Measured 2026-10-08 on machine A with `npm run bench:balance` (`scripts/benchBalance.ts`):
+sequential gRPC calls from the host to the Ledger after 10 warm-up calls, so these are
+per-call latencies with no queueing. 200 `GetBalance('transit')` calls (`transit` is the
+account every transfer touches), then 50 `GetTrialBalance` calls. The full 17-container
+stack was running, plus the P2-6 session's kind cluster (both measurements).
+
+| Date | Machine | Ledger build | Ledger state | `GetBalance('transit')` p50 / p95 / p99 | `GetTrialBalance` p50 / p95 / p99 |
+|---|---|---|---|---|---|
+| 2026-10-08 | A | `026102f` (no snapshots) | 955,286 entries (477,653 on `transit`), quiet | 87.12 / 99.22 / 104.85 ms | 214.58 / 232.05 / 238.38 ms |
+| 2026-10-08 | A | P2-5 | 956,502 entries, 0 after the latest snapshot, quiet | **4.40 / 7.11 / 9.47 ms** | **4.31 / 5.66 / 5.98 ms** |
+| 2026-10-08 | A | P2-5 | 976,016–976,430 entries, **8,762–9,104 after a ~40 s-old snapshot**, during a 50/s k6 load | **5.41 / 8.12 / 10.82 ms** | **6.57 / 8.58 / 10.52 ms** |
+
+The load run (7,493 transfers, 0 errors) passed `npm run invariants -- --since
+2026-10-08T10:08:13Z`, I1–I6 and I8–I11, including I11 over all 41 development snapshots.
+
+**What it shows:** `GetBalance('transit')` went from 87 ms to 4–5 ms, and `GetTrialBalance`
+from 215 ms to 4–7 ms. A read now sums only the entries after the latest snapshot (the
+integration test checks the query plan reads exactly those), so its cost follows that
+delta, not the size of the ledger. With a snapshot every minute the delta stays below about
+12,000 entries at 50 transfers/s (arithmetic, not a measurement: 60 s × 50 transfers × 4
+entries for a successful transfer).

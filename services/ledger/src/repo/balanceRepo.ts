@@ -30,22 +30,42 @@ interface BalanceRow {
 }
 
 /**
- * Balances are derived from `entries`, never stored (spec section 7). SUM(bigint) is
- * numeric in Postgres, so it is read as text and converted with BigInt().
+ * Balances are derived from `entries`, never stored (spec section 7). Phase 2, item 5
+ * (ADR-029): the latest balance snapshot holds each account's totals over every entry with
+ * `id <= last_entry_id`, so only the entries after it are summed, through the
+ * `(account_id, id)` index. Every entry up to `last_entry_id` had committed before the
+ * snapshot was taken (`snapshotRepo.ts`), so nothing is missed or counted twice. With no
+ * snapshot yet, `last_entry_id` is 0 and this is the plain sum over all entries.
+ *
+ * SUM(bigint) is numeric in Postgres, so totals are read as text and converted with BigInt().
+ * Exported for the integration test that checks the plan reads only the later entries.
  */
-const BALANCES_SQL = `
+export const BALANCES_SQL = `
+  WITH latest AS (
+         SELECT id, last_entry_id FROM balance_snapshots ORDER BY last_entry_id DESC LIMIT 1
+       ),
+       snap AS (
+         SELECT COALESCE((SELECT id FROM latest), 0) AS id,
+                COALESCE((SELECT last_entry_id FROM latest), 0) AS last_entry_id
+       )
   SELECT code, type, currency,
          d::text AS debit_total,
          c::text AS credit_total,
          (CASE WHEN type = 'ASSET' THEN d - c ELSE c - d END)::text AS balance
     FROM (
       SELECT a.code, a.type, a.currency,
-             COALESCE(SUM(e.amount) FILTER (WHERE e.direction = 'D'), 0) AS d,
-             COALESCE(SUM(e.amount) FILTER (WHERE e.direction = 'C'), 0) AS c
+             COALESCE(l.debit_total, 0) + later.d AS d,
+             COALESCE(l.credit_total, 0) + later.c AS c
         FROM accounts a
-        LEFT JOIN entries e ON e.account_id = a.id
+       CROSS JOIN snap
+        LEFT JOIN balance_snapshot_lines l ON l.snapshot_id = snap.id AND l.account_id = a.id
+       CROSS JOIN LATERAL (
+             SELECT COALESCE(SUM(e.amount) FILTER (WHERE e.direction = 'D'), 0) AS d,
+                    COALESCE(SUM(e.amount) FILTER (WHERE e.direction = 'C'), 0) AS c
+               FROM entries e
+              WHERE e.account_id = a.id AND e.id > snap.last_entry_id
+           ) later
        WHERE $1::text IS NULL OR a.code = $1::text
-       GROUP BY a.id
     ) totals
    ORDER BY code`;
 
