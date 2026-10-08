@@ -16,10 +16,10 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **P2-5** (branch `claude/p2-5-ledger-snapshots`, PR #6): implemented and verified on a clean-room stack; CI open. Phase 1, P2-1 to P2-4 and **P2-6** (Kubernetes, `ADR-030`) are `DONE`. A Compose change must also land in `deploy/k8s` (`tests/unit/k8sManifests.test.ts` checks parity) |
+| **Active milestone** | **None: phase 2 is complete.** Phase 1 and P2-1 to P2-6 are `DONE` (P2-6 optional, built too). A Compose change must also land in `deploy/k8s` (`tests/unit/k8sManifests.test.ts` checks parity) |
 | **Definition of done** | **8 of 8 — phase 1 complete** (2026-10-07; the last box confirmed by the owner) |
-| **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. All three jobs green on `c5a82c1`. The first `nightly` found a real bug, fixed in ADR-024 |
-| **Next action** | Read the **last SESSION_LOG entry**: its numbered next actions are the plan. Then P2-5 (ledger snapshots, ADR-029) |
+| **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. Four jobs (`static`, `integration`, `k8s`, `nightly`), all green on P2-5's `8b7eceb`. The first `nightly` found a real bug, fixed in ADR-024 |
+| **Next action** | No milestone left. Open follow-ups (SESSION_LOG, 2026-10-08): the owner's call on transfer `4bad8053` stuck on the dev stack by test interference; two filed tasks (recovery backoff on unexpected transition errors; the outbox uniqueness test must not be able to commit); the P2-6 session's k8s crash-test timing fix (`claude/p2-6-k8s-crash-timing`) |
 | **Read first for phase 2** | `ARCHITECTURE.md` section 19 (each item is independent), plus `ADR-025` for how events look on the wire |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,

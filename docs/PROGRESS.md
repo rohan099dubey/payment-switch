@@ -24,7 +24,7 @@ Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED` · `DONE`
 | P2-2 | Notification service (phase 2, §19 item 2) | `DONE` | 19 (+ ADR-025, ADR-026) | 2026-10-07 | see `git log --grep "P2-2"` |
 | P2-3 | Reconciliation service (phase 2, §19 item 3) | `DONE` | 7, 8, 9, 19 (+ ADR-027) | 2026-10-07 | see `git log --grep "P2-3"` |
 | P2-4 | Tracing & dashboards (phase 2, §19 item 4) | `DONE` | 17, 19 (+ ADR-028) | 2026-10-08 | see `git log --grep "P2-4"` |
-| P2-5 | Ledger balance snapshots (phase 2, §19 item 5) | `IN_PROGRESS` | 7, 10, 19 (+ ADR-029) | — | — |
+| P2-5 | Ledger balance snapshots (phase 2, §19 item 5) | `DONE` | 7, 10, 19 (+ ADR-029) | 2026-10-08 | see `git log --grep "P2-5"` |
 | P2-6 | Kubernetes manifests (phase 2, §19 item 6, optional) | `DONE` | 15, 19 (+ ADR-030) | 2026-10-08 | see `git log --grep "P2-6"` |
 
 Session 0 (docs & context scaffolding) is complete and is not a milestone.
@@ -460,7 +460,7 @@ Acceptance
 - [x] Full integration suite green: 222/222 in 15 files on a clean-room stack (`COMPOSE_PROJECT_NAME=payment-switch-fresh`, ADR-023). On the development stack 215/222: the other 7 time out waiting for "no transfer in flight" because of transfer `4bad8053`, stuck by test interference (SESSION_LOG, session 4)
 - [x] The 10,000-transfer test passes twice with different seeds, with **I11** holding (clean-room stack; seed 1: 9,468 / 520 / 12; seed 2: 9,402 / 525 / 73; I1–I11, 0 manual review; I11 over 74–78 snapshots taken under load; crash recovery 200/200 with I11 each)
 - [x] `npm run invariants` green after the runs (clean-room stack, unscoped: 20,488 transfers, I1–I6 and I8–I11 hold, 78 snapshots)
-- [ ] CI green on GitHub
+- [x] CI green on GitHub: PR rohan099dubey/payment-switch#6 (`static`, `integration`, `k8s` on `8b7eceb`; the `k8s` job runs two Ledgers, so two snapshotters, with I1–I11); `nightly` run 37785225713 (seed 1: 9,466 / 518 / 16; seed 2: 9,404 / 526 / 70; unscoped invariants on the fresh CI stack: 20,141 transfers, I1–I11 hold, 15 snapshots)
 
 ## P2-6 — Kubernetes manifests (phase 2, §19 item 6, optional)
 
