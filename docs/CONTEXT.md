@@ -16,10 +16,10 @@ crashes mid-transfer.
 
 | | |
 |---|---|
-| **Active milestone** | **P2-3** waiting for CI (PR #3) and **P2-4** (branch `claude/p2-4-observability`, stacked on P2-3) open: tracing-cost row and CI. Phase 1, P2-1 and P2-2 are `DONE` |
+| **Active milestone** | **P2-4** (branch `claude/p2-4-observability`): only CI open. Phase 1 and P2-1 to P2-3 are `DONE`. **P2-6** (Kubernetes) is being built by a parallel session on `claude/p2-6-kubernetes` (ADR-030); P2-5 takes ADR-029 |
 | **Definition of done** | **8 of 8 — phase 1 complete** (2026-10-07; the last box confirmed by the owner) |
 | **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. All three jobs green on `c5a82c1`. The first `nightly` found a real bug, fixed in ADR-024 |
-| **Next action** | Read the **last SESSION_LOG entry** ("Session 3 (end)"): its numbered next actions are the plan. Then P2-5 (ledger snapshots), P2-6 (k8s, optional) |
+| **Next action** | Read the **last SESSION_LOG entry**: its numbered next actions are the plan. Then P2-5 (ledger snapshots, ADR-029) |
 | **Read first for phase 2** | `ARCHITECTURE.md` section 19 (each item is independent), plus `ADR-025` for how events look on the wire |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
@@ -173,7 +173,7 @@ Computed against a baseline snapshot taken before each run.
 | Outbox: an event for **every** terminal state (incl. `NEEDS_MANUAL_REVIEW`), `UNIQUE (aggregate_id)`, amount as a string, **Kafka 3.9.1** (kafkajs predates 4.x), no `depends_on` Kafka, relay metrics, invariant I8 | `ADR-025` |
 | Notification: a dedicated `postgres-notification`, a deterministic simulated webhook (`whfail-` / `whflaky-` payees, a seeded rate), blocking retries 200·2^n ms, a dead letter for malformed messages, invariant I9 | `ADR-026` |
 | Reconciliation: **added** `LedgerService.ListJournalsByTime` and `ReconciliationService.RunReconciliation`; paged `GetStatement` (page_size, page_token); a 120 s settle lag; breaks OPEN to RESOLVED; dedicated `postgres-reconciliation`; invariant I10 | `ADR-027` |
-| Tracing: the OTel bootstrap is the first import in every `main.ts`; `pg` spans only inside requests; always-on sampling (its cost is a separate benchmark row); new top-level `observability/` | `ADR-028` |
+| Tracing: the OTel bootstrap is the first import in every `main.ts`; `pg` spans only inside requests; always-on sampling (its cost is a separate benchmark row: +26 % CPU per transfer); new top-level `observability/`; Jaeger's store capped at 10,000 traces (amendment 1) | `ADR-028` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
 

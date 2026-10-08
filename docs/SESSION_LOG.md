@@ -1402,3 +1402,35 @@ doubles Orchestrator CPU per transfer.** No benchmarks.md row written yet.
 3. Then: run lint/typecheck/test on the P2-4 branch, `git push --force-with-lease` it, open the PR,
    `gh workflow run ci.yml --ref claude/p2-4-observability`, wait for CI, tick, merge ff-only, push main.
 4. P2-5 ledger balance snapshots; P2-6 k8s (optional).
+
+## 2026-10-08 — Session 4 (continued) — P2-4 tracing cost measured; Jaeger memory bounded
+
+**Done**
+- Docker Desktop's engine had stopped (twice: once mid-A/B, once when the app was quit). Restarted
+  it and the stack with `docker compose up -d --no-build --wait` (no data lost). Postgres had been
+  SIGKILLed, so it replayed WAL; invariants since the interrupted run: 2,225 transfers, I1–I10 hold.
+- **Tracing A/B redone properly** at 50/s (below the knee for both modes): off / on / off / on, each
+  after a force-recreate, `VACUUM ANALYZE`, a 90 s warm-up and a 20 s pause, then 2 min measured.
+  CPU per transfer from Prometheus counters at the window edges. Both pairs agree: **+26 % CPU per
+  transfer** (19.6 to 24.8 ms), Orchestrator +25 % (10.0 to 12.5 ms), p50 +8 ms; the p95 and p99
+  differences are within noise. Four rows plus the CPU table are in `docs/benchmarks.md` ("Tracing cost").
+- **Jaeger memory bounded** (ADR-028 amendment 1): the v2 default `max_traces: 100000` had grown
+  Jaeger to 2.56 GiB. `observability/jaeger/config.yaml` is upstream's config with `max_traces: 10000`;
+  after 13,501 transfers it plateaued at 393 MiB (peak 770 MiB). Unit guard plus a mutant check.
+
+**Gotchas**
+- **k6 run tags must be unique across invocations.** Idempotency keys are `${LOAD_RUN}-${VU}-${n}`, so
+  reusing a tag (`ab-1-off` from the day before) sends old keys with new bodies, and every request gets
+  `409 IDEMPOTENCY_KEY_REUSED` in about 5 ms. That is the switch working correctly; it voided one run.
+- **Stopping a background Bash task leaves its `bash run.sh` child running** on Windows. Kill it with
+  `taskkill /F /T /PID <pid>` (find it via `Get-CimInstance Win32_Process`).
+- Right after a recreate, the services are slow for 30–60 s (cold JIT and pools), much slower with
+  tracing on (warm-up p50 2.8 s at 75/s). Any benchmark needs a warm-up; that explains session 3's pair.
+- With tracing on, 75/s is at the Orchestrator's knee: a run that starts with a backlog never recovers
+  (13 % `504`s), though every transfer still finishes correctly through recovery.
+- A parallel session ("Continue task completion", worktree `continue-task-completion-da2adb`) is building
+  **P2-6** on `claude/p2-6-kubernetes` (ADR-030) with a kind cluster `payment-switch` (~2.4 GiB, host
+  ports 30080, 25433–25437, 60052–60062). Its `tests/unit/k8sManifests.test.ts` requires the manifests to
+  mirror every Compose service and env var, so whichever of P2-4 or P2-6 merges second adds the other's
+  entries. Both add `tests/unit/**/*.test.ts` to the vitest unit project (a trivial conflict). Tell that
+  session before any k6 benchmark.

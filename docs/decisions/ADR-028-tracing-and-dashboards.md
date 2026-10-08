@@ -46,3 +46,26 @@ noise control, the dashboard contents and how they are verified are all open.
   no trace to inspect. Always on, with the cost measured, is the stricter choice.
 - **`--require` the bootstrap from the Dockerfile.** It also works, but the dependency
   would hide in the image instead of the code that relies on it.
+
+## Amendment 1 (2026-10-08): a bounded Jaeger store, and the measured cost
+
+**Jaeger's memory.** The Consequences above said the three containers take about 300 MB.
+That was wrong for Jaeger. Its built-in configuration keeps up to **100,000** traces in
+memory, and each transfer is one trace of about 64 spans, so after a day of tests Jaeger held
+**2.56 GiB** of Docker Desktop's 7.35 GiB VM, and kept growing. Docker Desktop's engine
+stopped twice during that period. The cause is not proven, but memory pressure is the
+obvious candidate.
+
+Decision: Compose runs Jaeger with `observability/jaeger/config.yaml`. That file is the
+image's own configuration (`cmd/jaeger/internal/all-in-one.yaml` at `v2.11.0`) with **one**
+change, `max_traces: 10000`. Measured with 13,501 transfers at 50/s after the change: Jaeger
+peaked at 770 MiB while filling, fell once eviction began, and settled at 393 MiB (0 errors,
+I1–I10 hold). The latest 10,000 traces are always enough to inspect any recent transfer or
+chaos failure. A unit test (`tests/unit/dashboards.test.ts`) checks that Compose mounts the
+file and that the limit is 10,000.
+
+**The cost of tracing**, measured as this ADR required (`docs/benchmarks.md`, "Tracing
+cost"): about +26 % CPU per transfer across the services and +25 % on the Orchestrator, and
+about +8 ms median latency at 50/s. Sampling stays always on: development and CI run well
+below the knee. Lowering `OTEL_TRACES_SAMPLER` is the lever if a higher-rate run ever needs
+it, and it is an environment variable, not a code change.

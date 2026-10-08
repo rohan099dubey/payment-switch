@@ -120,3 +120,17 @@ describe('Grafana dashboard (section 19 item 4, ADR-028)', () => {
     }
   });
 });
+
+describe('Jaeger (ADR-028, amendment 1)', () => {
+  it('runs the committed configuration, whose in-memory store is bounded', () => {
+    const compose = readFileSync(path.join(ROOT, 'docker-compose.yml'), 'utf8');
+    const jaeger = /^ {2}jaeger:\r?\n((?: {4}.*\r?\n|\r?\n)*)/m.exec(compose)?.[1] ?? '';
+    expect(jaeger).toContain("command: ['--config', '/etc/jaeger/config.yaml']");
+    expect(jaeger).toContain('./observability/jaeger/config.yaml:/etc/jaeger/config.yaml:ro');
+
+    // Each transfer is one trace of about 64 spans: upstream's 100,000 traces reached 2.5 GiB.
+    const config = readFileSync(path.join(ROOT, 'observability/jaeger/config.yaml'), 'utf8');
+    const limits = [...config.matchAll(/max_traces:\s*(\d+)/g)].map((m) => Number(m[1]));
+    expect(limits).toEqual([10_000]);
+  });
+});

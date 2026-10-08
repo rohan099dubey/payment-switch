@@ -425,13 +425,14 @@ Implementation
 - [x] Compose: `jaegertracing/jaeger:2.11.0`, `prom/prometheus:v3.7.0`, `grafana/grafana:12.2.0`, each with a healthcheck; nothing on the payment path depends on them
 - [x] `observability/prometheus/prometheus.yml` (7 jobs, 5 s); Grafana provisioning (Prometheus and Jaeger datasources, a read-only dashboard provider)
 - [x] `observability/grafana/dashboards/payment-switch.json`: 15 panels in Throughput / Latency / In flight and recovery / Injected chaos / Events
+- [x] (amendment 1) `observability/jaeger/config.yaml`: upstream's config with `max_traces: 10000` (the default 100,000 grew Jaeger to 2.56 GiB); measured plateau 393 MiB after 13,501 transfers
 
 Acceptance
 - [x] One transfer is one trace: 64 spans across gateway, orchestrator, bank-a, bank-b and ledger, including their Postgres statements (observed in Jaeger)
-- [x] Unit (`tests/unit/dashboards.test.ts`, 4): the groups, Prometheus targets, no grid overlap, **every queried metric defined in source**. A misspelt-metric mutant fails it, naming the metric
+- [x] Unit (`tests/unit/dashboards.test.ts`, 5): the groups, Prometheus targets, no grid overlap, **every queried metric defined in source**, Jaeger's store bounded. A misspelt-metric mutant fails it, naming the metric; the upstream `max_traces: 100000` fails the Jaeger check
 - [x] Integration (`tests/integration/observability.test.ts`, 4): 7/7 targets up; **every dashboard query runs in Prometheus**; Grafana serves the dashboard and the datasource is healthy; the trace across 5 services is found for a fresh transfer
 - [x] Full integration suite green: 216/216 in 14 files (with tracing on)
 - [x] The 10,000-transfer test passes twice with different seeds, I1–I10, with tracing on (seed 1: 9,471 / 519 / 10; seed 2: 9,400 / 526 / 74; 0 manual review)
 - [x] `npm run invariants` green after the runs (`--since 2026-10-07T13:10:06Z`: 20,453 transfers, I1–I6 and I8–I10 hold)
-- [ ] The cost of tracing measured with k6 and recorded as a new row in `docs/benchmarks.md`. **OPEN:** the first A/B run was confounded (the tracing-**off** run came out slower). Raw numbers are in SESSION_LOG; redo the A/B before writing any row
+- [x] The cost of tracing measured with k6 and recorded in `docs/benchmarks.md` ("Tracing cost"): 4 rows at 50/s, alternating off / on / off / on after recreate, `VACUUM ANALYZE` and a 90 s warm-up, 0 errors, invariants green after each. Tracing adds **+26 % CPU per transfer** (19.6 to 24.8 ms across the services; Orchestrator 10.0 to 12.5 ms) and about **+8 ms p50**. The earlier confounded pair is explained: cold start after a recreate
 - [ ] CI green on GitHub
