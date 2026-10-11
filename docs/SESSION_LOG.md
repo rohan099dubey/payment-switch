@@ -1571,3 +1571,53 @@ was fine (every transfer terminal, I1-I10). Fixed on `claude/p2-6-k8s-crash-timi
 resolved before the traffic (`containerPid`), the victim chosen once it holds at least 20 live
 leases, `kill -9` of the known PID. Lesson: a timing-based test that passes locally (16 CPUs)
 must be judged on the slowest machine that runs it.
+
+## 2026-10-11 — Session 6 — Follow-up: recovery backs off on unexpected transition errors (ADR-031)
+
+**Status at end:** follow-up `DONE` (PROGRESS, "Follow-up — Recovery backs off …"); `4bad8053` on
+the development stack is still the owner's call.
+
+**Done**
+- Root cause of the hot loop on `4bad8053`: the recovery worker's `catch` released the lease and
+  returned, `next_attempt_at` stayed in the past and `attempts` stayed 0, so every 1 s poll claimed
+  it again and `MAX_RECOVERY_ATTEMPTS` could never fire.
+- `SagaEngine.aborted` (`advance`, `settle`, `exhaust`): in recovery, a non-`StaleTransferError`
+  error is a section 6 `yield` at the version the drive last wrote. The worker no longer releases
+  the lease in its `catch` (when even the yield fails, `LEASE_MS` is the backoff); `releaseLease`
+  left the `RecoveryStore` port. Inline unchanged. Classification unchanged.
+- Tests: 7 saga + 4 worker unit tests (9 fail on the old code); `tests/integration/recoveryBackoff.test.ts`
+  (2, fail on the old code: `runOnce` returns `[]`).
+- Verified on a clean-room stack (`COMPOSE_PROJECT_NAME=payment-switch-backoff`, built from this
+  branch, dev stack untouched): `test:integration` **224/224 in 16 files**; `test:chaos` 2/2
+  (10,000 transfers, seed 1: 9,466 / 518 / 16, I1–I11, 0 manual review; crash recovery 200/200
+  SUCCESS); unscoped `npm run invariants` (10,288 transfers) all PASS. No
+  "unexpected error while recovering" in the Orchestrator log. Project removed with
+  `down -v --rmi local`.
+
+**Decisions**
+- Yield inside the saga, not in the worker: only the saga knows the version after earlier
+  transitions in the same drive. Not `BUG` at once: a database blip would send healthy transfers to
+  manual review. Not `ON CONFLICT DO NOTHING` on the outbox: it would publish the wrong event. ADR-031.
+- The integration test creates, migrates and drops its own scratch database on the orchestrator's
+  Postgres server. It can run in CI and in the normal suite without ever writing `orchestrator_db`
+  or being claimed by a live recovery worker. It was still run only on throwaway projects.
+
+**Gotchas**
+- **`4bad8053` cannot escalate either.** `NEEDS_MANUAL_REVIEW` also writes an outbox row (ADR-025),
+  so the planted row blocks it too. With this change it backs off to one attempt a minute instead
+  of one a second. **Order matters for the owner:** remove the planted row *before* the rebuilt
+  Orchestrator has run on it for about 16 to 19 minutes (20 attempts), and the next attempt reaches
+  `SUCCESS` (correct: both legs and journals are posted). Afterwards, removing it gives
+  `NEEDS_MANUAL_REVIEW` / `RECOVERY_EXHAUSTED`, which fails I6 on the development stack. The shared
+  stack's Orchestrator still runs the old image until someone rebuilds it.
+- A repo-level test against a throwaway project with only `postgres-orchestrator` up fails:
+  `orchestrator_db` has no tables until the Orchestrator service runs its migrations. Run such
+  tests on a full stack, or migrate first.
+- On this machine `python` sometimes resolves to the Microsoft Store alias and does nothing; use
+  `/c/msys64/ucrt64/bin/python`.
+- Coordinated Docker with the parallel "outbox uniqueness test" session: one throwaway project at
+  a time, handed over by message (`payment-switch-backoff`, then `payment-switch-outboxfix`, then
+  the clean-room run). The shared `payment-switch` project was never started.
+
+**Next action**
+- The owner: decide about `4bad8053`'s planted outbox row (id 226370), keeping the ordering above in mind.
