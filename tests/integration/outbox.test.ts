@@ -14,6 +14,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { publishBatch } from '../../services/orchestrator/src/repo/outboxRepo';
 import { BankAdmin } from '../helpers/bankAdmin';
+import { inRolledBackTransaction } from '../helpers/db';
 import { DEV_CLIENTS, GatewayClient, type HttpResult } from '../helpers/gatewayClient';
 import { awaitOutboxPublished } from '../helpers/invariants';
 import { readTransferEvents } from '../helpers/kafka';
@@ -26,6 +27,7 @@ const RUN = randomUUID().slice(0, 8);
 let counter = 0;
 const uniqueId = (prefix: string): string => `p21-${RUN}-${prefix}-${++counter}`;
 const client = GatewayClient.for(DEV_CLIENTS.a);
+const TERMINAL: ReadonlySet<string> = new Set(['SUCCESS', 'FAILED', 'REVERSED', 'NEEDS_MANUAL_REVIEW']);
 
 let banks: BankAdmin;
 let db: Pool;
@@ -142,17 +144,32 @@ describe('outbox — schema (section 19, ADR-025)', () => {
     expect(idx.rows[0]?.indexdef).toContain('WHERE (published_at IS NULL)');
   });
 
-  it('the database rejects a second event for a transfer, and an unknown event type', async () => {
+  it('the database rejects a second event for a transfer, and an unknown event type', { timeout: 90_000 }, async () => {
     const { payer, payee } = await accounts(10_000n);
     const id = (await transfer(payer, payee)).body.id as string;
-    await expect(
-      db.query(`INSERT INTO outbox (aggregate_id, event_type, payload) VALUES ($1, 'transfer.failed', '{}')`, [id]),
-    ).rejects.toMatchObject({ code: '23505', constraint: 'outbox_one_event_per_transfer' });
-    await expect(
-      db.query(`INSERT INTO outbox (aggregate_id, event_type, payload) VALUES ($1, 'transfer.created', '{}')`, [
+    // A 202 transfer has no event yet, so the "second" one would be its first and would
+    // be accepted. Wait until it is terminal, and require its own event.
+    await waitFor(
+      'the transfer to be terminal',
+      async () => TERMINAL.has((await client.getTransfer(id)).body.state as string),
+      80_000,
+    );
+    expect(await outboxRows(id)).toHaveLength(1);
+
+    // Each insert rolls back whatever happens, so a wrong precondition or a missing
+    // constraint fails this test without committing a fake event to a shared database.
+    const duplicate = await inRolledBackTransaction(db, async (c) => {
+      await c.query(`INSERT INTO outbox (aggregate_id, event_type, payload) VALUES ($1, 'transfer.failed', '{}')`, [
+        id,
+      ]);
+    });
+    expect(duplicate).toMatchObject({ code: '23505', constraint: 'outbox_one_event_per_transfer' });
+    const unknownType = await inRolledBackTransaction(db, async (c) => {
+      await c.query(`INSERT INTO outbox (aggregate_id, event_type, payload) VALUES ($1, 'transfer.created', '{}')`, [
         randomUUID(),
-      ]),
-    ).rejects.toMatchObject({ code: '23514' });
+      ]);
+    });
+    expect(unknownType).toMatchObject({ code: '23514' });
     expect(await outboxRows(id)).toHaveLength(1);
   });
 });

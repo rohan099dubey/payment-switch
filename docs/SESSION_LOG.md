@@ -1621,3 +1621,35 @@ the development stack is still the owner's call.
 
 **Next action**
 - The owner: decide about `4bad8053`'s planted outbox row (id 226370), keeping the ordering above in mind.
+## 2026-10-11 — Follow-up — negative SQL tests can no longer commit
+
+Filed task from 2026-10-08: the P2-1 outbox uniqueness test committed a fake event into the
+shared dev DB (outbox id 226370, transfer `4bad8053`) because it assumed the transfer it had
+just created was terminal.
+
+- **`tests/helpers/db.ts` `inRolledBackTransaction(pool, fn)`**: runs `fn` in `BEGIN … ROLLBACK`
+  whatever happens and returns the error it threw. Every raw write a test *expects to be
+  rejected* now goes through it, one statement per call (after an error Postgres aborts the
+  transaction, so a second statement in it would test nothing).
+- **outbox.test.ts**: waits (Gateway GET, 80 s) for the transfer to be terminal and requires its
+  own outbox row *before* the duplicate insert; both negative inserts are rolled back. The
+  unknown-type insert used a random `aggregate_id`: had the CHECK been missing, it would have
+  committed an orphan event that the relay publishes to Kafka.
+- Same pattern applied after grepping `tests/` for INSERT/UPDATE/DELETE/TRUNCATE:
+  `ledger.test.ts` (append-only UPDATE/DELETE, now one `it.each`; TRUNCATE), `mockBank.test.ts`
+  (negative balance, `applied_has_money`), `ledgerSnapshots.test.ts` (its private helper moved
+  to the shared one). Intentional writes (orchestratorRepo parking rows, a BLOCKED account,
+  the balanced-journal test) are left as they are.
+- **The unbalanced-journal test no longer COMMITs.** It ran `COMMIT` and expected the deferred
+  trigger to refuse it; with the trigger missing that would commit an unbalanced journal that
+  the append-only triggers then forbid anyone to delete. It now runs `SET CONSTRAINTS ALL
+  IMMEDIATE`, which fires the same pending deferred trigger at that point, and rolls back.
+  The deferral itself is still proven by the next test (balanced only by commit time: accepted).
+
+**Verified** on a clean-room project (`payment-switch-outboxfix`, ADR-023; shared stack untouched,
+coordinated with the recovery-backoff session over the host ports): the 4 changed files, 72/72.
+Then the incident was reproduced there: `bank_a` `lostResponseRate: 1`, the uniqueness test alone.
+The transfer yielded at `DEBIT_SENT` (202), recovery finished it 35 s later, the test passed, and
+the outbox gained exactly one row, the transfer's own `transfer.succeeded` (no `{}` payloads, no
+orphans). The old test would have committed its fake row at that point.
+

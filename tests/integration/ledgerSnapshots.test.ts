@@ -10,10 +10,11 @@
 import { randomUUID } from 'node:crypto';
 import { callUnary, makeClient } from '@switch/common';
 import { EntryDirection, LedgerServiceClient, type PostJournalRequest } from '@switch/proto-gen/ledger/v1';
-import { Pool, type PoolClient } from 'pg';
+import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BALANCES_SQL } from '../../services/ledger/src/repo/balanceRepo';
 import { createSnapshot, type SnapshotOutcome } from '../../services/ledger/src/repo/snapshotRepo';
+import { inRolledBackTransaction } from '../helpers/db';
 import { checkI11, mapLimit } from '../helpers/invariants';
 import { LedgerReader } from '../helpers/ledgerClient';
 
@@ -65,21 +66,6 @@ async function snapshotNow(): Promise<SnapshotOutcome> {
     if (outcome.result !== 'lock_timeout') return outcome;
   }
   throw new Error('no snapshot after 10 lock timeouts');
-}
-
-/** Runs `fn` in a transaction that is always rolled back; returns its error, if any. */
-async function inRolledBackTransaction(fn: (c: PoolClient) => Promise<void>): Promise<Error | undefined> {
-  const c = await db.connect();
-  try {
-    await c.query('BEGIN');
-    await fn(c);
-    return undefined;
-  } catch (err) {
-    return err instanceof Error ? err : new Error(String(err));
-  } finally {
-    await c.query('ROLLBACK');
-    c.release();
-  }
 }
 
 describe('balance snapshots (section 19 item 5, ADR-029)', () => {
@@ -177,7 +163,7 @@ describe('balance snapshots (section 19 item 5, ADR-029)', () => {
       'TRUNCATE balance_snapshot_lines',
       'TRUNCATE balance_snapshots CASCADE',
     ]) {
-      const err = await inRolledBackTransaction(async (c) => {
+      const err = await inRolledBackTransaction(db, async (c) => {
         await c.query(sql);
       });
       expect(err?.message, sql).toMatch(/append-only/);
@@ -205,7 +191,7 @@ describe('balance snapshots (section 19 item 5, ADR-029)', () => {
       { name: 'no lines', lines: () => null, error: /lines for/ },
     ];
     for (const k of cases) {
-      const err = await inRolledBackTransaction(async (c) => {
+      const err = await inRolledBackTransaction(db, async (c) => {
         const r = await c.query<{ id: string }>(
           'INSERT INTO balance_snapshots (last_entry_id) VALUES ($1) RETURNING id::text',
           [fakeLast],

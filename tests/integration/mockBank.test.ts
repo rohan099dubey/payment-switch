@@ -21,6 +21,7 @@ import {
 } from '@switch/proto-gen/bank/v1';
 import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { inRolledBackTransaction } from '../helpers/db';
 
 const TIMEOUT_MS = 10_000;
 /** Chaos tests: a client deadline well below SLOW_MS, so late and lost responses really are late. */
@@ -569,17 +570,20 @@ describe('two independent instances', () => {
 describe('database guarantees and observability', () => {
   it('a balance can never go negative (CHECK constraint)', async () => {
     const account = await newAccount(5n);
-    await expect(banks.a.db.query('UPDATE accounts SET balance = -1 WHERE account_id = $1', [account])).rejects.toThrow(
-      /accounts_balance_check/,
-    );
+    // Rolled back whatever happens: a missing constraint fails the test, never the data.
+    const err = await inRolledBackTransaction(banks.a.db, async (c) => {
+      await c.query('UPDATE accounts SET balance = -1 WHERE account_id = $1', [account]);
+    });
+    expect(err?.message).toMatch(/accounts_balance_check/);
   });
 
   it('an APPLIED operation must carry an account and amount (applied_has_money)', async () => {
-    await expect(
-      banks.a.db.query(`INSERT INTO operations (reference_id, operation, status) VALUES ($1, 'DEBIT', 'APPLIED')`, [
+    const err = await inRolledBackTransaction(banks.a.db, async (c) => {
+      await c.query(`INSERT INTO operations (reference_id, operation, status) VALUES ($1, 'DEBIT', 'APPLIED')`, [
         uniqueId('raw'),
-      ]),
-    ).rejects.toThrow(/applied_has_money/);
+      ]);
+    });
+    expect(err?.message).toMatch(/applied_has_money/);
   });
 
   it('serves health and the bank metrics on each instance', async () => {

@@ -17,6 +17,7 @@ import {
 } from '@switch/proto-gen/ledger/v1';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { inRolledBackTransaction } from '../helpers/db';
 import { waitFor } from '../helpers/stack';
 
 const LEDGER_ADDR = process.env.LEDGER_GRPC_ADDR ?? 'localhost:50052';
@@ -241,9 +242,10 @@ describe('database guarantees (raw SQL, bypassing the service)', () => {
   it('the deferred trigger rejects an unbalanced journal at COMMIT', async () => {
     const transit = await accountId('transit');
     const key = `raw-unbalanced:${RUN}`;
-    const conn = await db.connect();
-    try {
-      await conn.query('BEGIN');
+    // SET CONSTRAINTS ALL IMMEDIATE runs the deferred check COMMIT would run, in a
+    // transaction that always rolls back: if the trigger were ever missing, this test
+    // fails without committing an unbalanced journal to an append-only ledger.
+    const err = await inRolledBackTransaction(db, async (conn) => {
       const { rows } = await conn.query<{ id: string }>(
         `INSERT INTO journals (idempotency_key, request_hash, reference_id, kind, currency)
          VALUES ($1, 'raw', $1, 'RAW_TEST', 'INR') RETURNING id`,
@@ -253,11 +255,9 @@ describe('database guarantees (raw SQL, bypassing the service)', () => {
         rows[0]?.id,
         transit,
       ]);
-      await expect(conn.query('COMMIT')).rejects.toThrow(/unbalanced: debits 100 credits 0/);
-    } finally {
-      await conn.query('ROLLBACK').catch(() => undefined);
-      conn.release();
-    }
+      await conn.query('SET CONSTRAINTS ALL IMMEDIATE');
+    });
+    expect(err?.message).toMatch(/unbalanced: debits 100 credits 0/);
     expect(await countJournals(key)).toBe(0);
   });
 
@@ -298,42 +298,30 @@ describe('database guarantees (raw SQL, bypassing the service)', () => {
       expect(journalId).not.toBe('');
     });
 
-    it('UPDATE on entries fails', async () => {
-      await expect(
-        db.query('UPDATE entries SET amount = amount + 1 WHERE journal_id = $1', [journalId]),
-      ).rejects.toThrow(/table entries is append-only/);
-    });
-
-    it('DELETE on entries fails', async () => {
-      await expect(db.query('DELETE FROM entries WHERE journal_id = $1', [journalId])).rejects.toThrow(
+    // Every statement runs in a transaction that always rolls back: if a trigger were ever
+    // missing, the test fails without changing or destroying the ledger.
+    it.each([
+      [
+        'UPDATE on entries',
+        'UPDATE entries SET amount = amount + 1 WHERE journal_id = $1',
         /table entries is append-only/,
-      );
-    });
-
-    it('UPDATE on journals fails', async () => {
-      await expect(db.query(`UPDATE journals SET kind = 'X' WHERE id = $1`, [journalId])).rejects.toThrow(
-        /table journals is append-only/,
-      );
-    });
-
-    it('DELETE on journals fails', async () => {
-      await expect(db.query('DELETE FROM journals WHERE id = $1', [journalId])).rejects.toThrow(
-        /table journals is append-only/,
-      );
+      ],
+      ['DELETE on entries', 'DELETE FROM entries WHERE journal_id = $1', /table entries is append-only/],
+      ['UPDATE on journals', `UPDATE journals SET kind = 'X' WHERE id = $1`, /table journals is append-only/],
+      ['DELETE on journals', 'DELETE FROM journals WHERE id = $1', /table journals is append-only/],
+    ] as const)('%s fails', async (_name, statement, error) => {
+      const err = await inRolledBackTransaction(db, async (conn) => {
+        await conn.query(statement, [journalId]);
+      });
+      expect(err?.message).toMatch(error);
     });
 
     it('TRUNCATE on entries and journals fails (ADR-015)', async () => {
-      // Inside a transaction that always rolls back: if the trigger were ever missing,
-      // this test fails without destroying the ledger.
       for (const statement of ['TRUNCATE entries', 'TRUNCATE journals CASCADE']) {
-        const conn = await db.connect();
-        try {
-          await conn.query('BEGIN');
-          await expect(conn.query(statement)).rejects.toThrow(/append-only/);
-        } finally {
-          await conn.query('ROLLBACK');
-          conn.release();
-        }
+        const err = await inRolledBackTransaction(db, async (conn) => {
+          await conn.query(statement);
+        });
+        expect(err?.message, statement).toMatch(/append-only/);
       }
     });
 
