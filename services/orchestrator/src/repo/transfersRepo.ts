@@ -213,7 +213,7 @@ export async function acquireLease(
   return row === undefined ? null : toTransfer(row);
 }
 
-/** Gives the lease back early (e.g. a drive aborted by an unexpected error). True if it was held. */
+/** Gives the lease back early (an inline drive aborted by an unexpected error). True if it was held. */
 export async function releaseLease(db: Queryable, id: string, leaseOwner: string): Promise<boolean> {
   const result = await db.query(
     'UPDATE transfers SET lease_owner = NULL, lease_expires_at = NULL WHERE id = $1 AND lease_owner = $2',
@@ -315,7 +315,6 @@ export function createRecoveryStore(pool: Pool): RecoveryStore {
   return {
     claimDue: (leaseOwner, leaseMs, limit) => claimDue(pool, leaseOwner, leaseMs, limit),
     renewLease: (id, leaseOwner, leaseMs) => renewLease(pool, id, leaseOwner, leaseMs),
-    releaseLease: (id, leaseOwner) => releaseLease(pool, id, leaseOwner),
     countInFlight: () => countInFlight(pool),
   };
 }

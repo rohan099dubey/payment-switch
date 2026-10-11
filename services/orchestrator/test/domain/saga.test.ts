@@ -559,9 +559,92 @@ describe('SagaEngine.advance — lease and version loss', () => {
     expect(store.events).toHaveLength(0);
   });
 
-  it('propagates unexpected store errors (the caller releases the lease)', async () => {
+  it('inline: propagates unexpected store errors (the handler releases the lease)', async () => {
     const { engine, store, inline } = setup();
     store.casTransition = () => Promise.reject(new Error('connection terminated'));
     await expect(engine.advance(store.row, inline())).rejects.toThrow('connection terminated');
+    expect(store.yields).toBe(0);
+  });
+
+  it('recovery: StaleTransferError still just stops, it is never a yield', async () => {
+    const { engine, store, recovery } = setup({ transfer: { state: S.DEBITED } });
+    store.stealOnNextCas = true;
+    const result = await engine.advance(store.row, recovery);
+    expect(result.leaseOwner).toBe('someone-else');
+    expect(store.yields).toBe(0);
+  });
+});
+
+/** What `pg` throws for the outbox conflict seen on the dev stack (2026-10-08). */
+const duplicateOutboxRow = (): Error =>
+  Object.assign(new Error('duplicate key value violates unique constraint "outbox_one_event_per_transfer"'), {
+    code: '23505',
+  });
+
+describe('SagaEngine — an unexpected error in recovery yields with backoff (ADR-031)', () => {
+  it('CREDITED -> SUCCESS refused by the database: state kept, attempts + 1, backoff, lease released', async () => {
+    const { engine, store, recovery, observer } = setup({ transfer: { state: S.CREDITED, version: 6 } });
+    store.casTransition = () => Promise.reject(duplicateOutboxRow());
+    const result = await engine.advance(store.row, recovery);
+
+    expect(result).toMatchObject({ state: S.CREDITED, version: 6, attempts: 1, leaseOwner: null });
+    expect(store.yields).toBe(1);
+    expect(store.lastBackoffMs).toBe(2000); // recoveryBackoffMs(1), the same as any yield
+    expect(store.events).toEqual([]);
+    expect(observer.terminals).toEqual([]);
+  });
+
+  it('a failure later in the drive yields at the version this drive last wrote', async () => {
+    const { engine, store, recovery, downstream } = setup({ transfer: { state: S.DEBITED, version: 3 } });
+    const original = store.casTransition.bind(store);
+    store.casTransition = (req) =>
+      req.toState === S.CREDITED ? Promise.reject(new Error('connection terminated')) : original(req);
+    const result = await engine.advance(store.row, recovery);
+
+    expect(trail(store)).toEqual(['DEBITED->CREDIT_SENT']);
+    expect(result).toMatchObject({ state: S.CREDIT_SENT, version: 4, attempts: 1, leaseOwner: null });
+    expect(store.yields).toBe(1);
+    // The credit was applied; recovery repeats the idempotent Credit and gets the same answer.
+    expect(downstream.callsTo('Credit')).toHaveLength(1);
+  });
+
+  it('settle: Resolve APPLIED but the DEBITED write fails -> yield in DEBIT_SENT', async () => {
+    const { engine, store, recovery, downstream } = setup({ transfer: { state: S.DEBIT_SENT, attempts: 3 } });
+    downstream.script('Resolve:DEBIT', { resolved: 'APPLIED' });
+    store.casTransition = () => Promise.reject(new Error('connection terminated'));
+    const outcome = await engine.settle(store.row, recovery);
+
+    expect(outcome.resolution).toBeNull();
+    expect(outcome.transfer).toMatchObject({ state: S.DEBIT_SENT, attempts: 4, leaseOwner: null });
+    expect(store.yields).toBe(1);
+    expect(store.lastBackoffMs).toBe(16_000);
+  });
+
+  it('exhaust: a refused NEEDS_MANUAL_REVIEW write yields too, so the escalation is retried later', async () => {
+    const { engine, store, recovery } = setup({ transfer: { state: S.CREDITED, attempts: 20 } });
+    store.casTransition = () => Promise.reject(duplicateOutboxRow());
+    const result = await engine.exhaust(store.row, recovery);
+
+    expect(result).toMatchObject({ state: S.CREDITED, attempts: 21, leaseOwner: null });
+    expect(store.yields).toBe(1);
+    expect(store.lastBackoffMs).toBe(1000 * 2 ** 21);
+  });
+
+  it('if the yield fails as well, the original error propagates (the lease then expires)', async () => {
+    const { engine, store, recovery } = setup({ transfer: { state: S.CREDITED } });
+    store.casTransition = () => Promise.reject(duplicateOutboxRow());
+    store.yieldTransfer = () => Promise.reject(new Error('connection terminated'));
+    await expect(engine.advance(store.row, recovery)).rejects.toThrow('outbox_one_event_per_transfer');
+  });
+
+  it('a yield that no longer matches (lost the lease meanwhile) returns the row as it stands', async () => {
+    const { engine, store, recovery } = setup({ transfer: { state: S.CREDITED } });
+    store.casTransition = () => {
+      store.row = { ...store.row, version: store.row.version + 1, leaseOwner: 'someone-else' };
+      return Promise.reject(new Error('connection terminated'));
+    };
+    const result = await engine.advance(store.row, recovery);
+    expect(result.leaseOwner).toBe('someone-else');
+    expect(store.yields).toBe(0);
   });
 });

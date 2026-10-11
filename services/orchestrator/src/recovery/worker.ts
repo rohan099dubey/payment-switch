@@ -22,7 +22,6 @@ export interface RecoveryConfig {
 export interface RecoveryStore {
   claimDue: (leaseOwner: string, leaseMs: number, limit: number) => Promise<Transfer[]>;
   renewLease: (id: string, leaseOwner: string, leaseMs: number) => Promise<Transfer | null>;
-  releaseLease: (id: string, leaseOwner: string) => Promise<boolean>;
   countInFlight: () => Promise<Map<TransferState, number>>;
 }
 
@@ -138,7 +137,11 @@ export class RecoveryWorker {
     return results;
   }
 
-  /** Drives one claimed transfer. Null: skipped (lease lapsed) or failed unexpectedly. */
+  /**
+   * Drives one claimed transfer. Null: skipped (lease lapsed) or failed unexpectedly. An
+   * unexpected error inside the drive is already a yield with backoff (`SagaEngine`,
+   * ADR-031), so it is reported as `yielded`.
+   */
   private async recoverOne(claimed: Transfer, leaseOwner: string): Promise<RecoveryResult | null> {
     const { store, saga, config } = this.deps;
     const logger = this.deps.logger.child({ transfer_id: claimed.id });
@@ -156,7 +159,8 @@ export class RecoveryWorker {
       switch (action) {
         case 'exhaust': {
           const after = await saga.exhaust(t, ctx);
-          return after.state === TransferState.NEEDS_MANUAL_REVIEW ? 'exhausted' : null;
+          // Not escalated: lost to another driver, or the write failed and the saga yielded.
+          return after.state === TransferState.NEEDS_MANUAL_REVIEW ? 'exhausted' : 'yielded';
         }
         case 'resolve': {
           const settled = await saga.settle(t, ctx);
@@ -168,10 +172,10 @@ export class RecoveryWorker {
           return progressed(t, await saga.advance(t, ctx)) ? 'advanced' : 'yielded';
       }
     } catch (err) {
-      // Unexpected (e.g. the database went away). Give the lease back so the transfer is
-      // retried on a later poll rather than after LEASE_MS. Best effort.
-      logger.error({ err }, 'recovery of transfer failed');
-      await store.releaseLease(claimed.id, leaseOwner).catch(() => false);
+      // Even the saga's yield failed, or renewing the lease did: the database is likely
+      // unreachable. The lease is kept on purpose: it expires after LEASE_MS, and that is
+      // the backoff. Releasing it would let the next poll retry at once (ADR-031).
+      logger.error({ err }, 'recovery of transfer failed; its lease will expire');
       return null;
     }
   }

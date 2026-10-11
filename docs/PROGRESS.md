@@ -485,3 +485,16 @@ Acceptance
 - [x] After the P2-4 rebase: the parity test failed first (no `jaeger` workload), as designed; with the stack mirrored it passes (106 tests) and 7 more mutants fail it (Jaeger args, an unmounted dashboard, a missing scrape job, Jaeger refusing a service's spans, a drifted Kafka health check, a wrong `OTEL_SERVICE_NAME`, init SQL from the wrong file). Fresh cluster: 4 min 4 s, 20 pods ready, 0 restarts. `test:k8s` 9/9 three times: also every pod a healthy Prometheus target (10 targets, 7 jobs), every dashboard query runs, Grafana serves the dashboard, one transfer is one trace across the 5 services; crash 200/200 finished by another instance, I1–I10
 - [x] CI green on GitHub on the final commit `c50506a` (rebased onto `main` with P2-4): run 37779798935, `static`, `integration`, `k8s` 5 min 21 s. Local acceptance on that commit: fresh cluster 5 min 51 s, 20 pods, `test:k8s` 9/9, I1–I10. Earlier: PR rohan099dubey/payment-switch#4, run 37761743256 on `d768a8e` (`static`, `integration`, `k8s` 4 min 35 s). The first run's `k8s` failed: 2-CPU runner, CPU requests too large, three Postgres pods unschedulable. Fixed in `d768a8e` with a budget unit test
 
+
+## Follow-up — Recovery backs off on unexpected transition errors (ADR-031)
+
+**Scope:** the hot loop on transfer `4bad8053` (SESSION_LOG, 2026-10-08). Not a milestone:
+a filed follow-up. Read first: §6, §13, §14.
+
+- [x] `SagaEngine` (`advance`, `settle`, `exhaust`): in recovery, an error that is not `StaleTransferError` yields (section 6 `yield`: `attempts + 1`, backoff, lease released, state unchanged), at the version this drive last wrote; inline unchanged
+- [x] `RecoveryWorker`: no lease release in its `catch` (if even the yield failed, the lease expires after `LEASE_MS`); `releaseLease` removed from the `RecoveryStore` port; an escalation that could not be written counts as `yielded`
+- [x] Unit: 7 new saga tests, 4 new or changed worker tests (incl. 20 yields with backoff 2 s … then `RECOVERY_EXHAUSTED`, and the 4bad8053 case). All 9 that assert the new behaviour fail on the old code
+- [x] Integration (`tests/integration/recoveryBackoff.test.ts`, 2) on a scratch database it creates, migrates and drops: a planted conflicting outbox row gives one yield per attempt with the exact section 6 backoff (2 s … 60 s), no claim while not due, the escalation at 20 backs off too, nothing else written; once the row is gone the next attempt reaches `SUCCESS` with one event and one outbox row. Run only on a throwaway Compose project (`payment-switch-backoff`). Both tests fail on the old code (`runOnce` returns `[]`: the hot loop)
+- [x] `npm run lint && npm run typecheck && npm test` green (unit 796/796, 39 files)
+- [ ] Full integration suite green on a clean-room stack (`COMPOSE_PROJECT_NAME=payment-switch-backoff`, ADR-023)
+- [ ] Development stack: `4bad8053` (the owner's call; see ADR-031, "Consequences", for why the order of removing the row and deploying matters)

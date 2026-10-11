@@ -153,7 +153,7 @@ export class SagaEngine {
               if (next.stop) return next.transfer;
               t = next.transfer;
             } else if (r.kind === 'bug') t = await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx);
-            else return await this.yield(t, ctx, r);
+            else return await this.yield(t, ctx, r.message);
             break;
           }
 
@@ -170,7 +170,7 @@ export class SagaEngine {
               if (next.stop) return next.transfer;
               t = next.transfer;
             } else if (r.kind === 'bug') t = await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx);
-            else return await this.yield(t, ctx, r);
+            else return await this.yield(t, ctx, r.message);
             break;
           }
 
@@ -185,7 +185,7 @@ export class SagaEngine {
             // reverseStep never reports `definite`: a refused refund is a broken invariant.
             else if (r.kind === 'bug' || r.kind === 'definite')
               t = await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx);
-            else return await this.yield(t, ctx, r);
+            else return await this.yield(t, ctx, r.message);
             break;
           }
 
@@ -196,8 +196,7 @@ export class SagaEngine {
       }
       return t;
     } catch (err) {
-      // Another driver owns the transfer now. Stop, do not retry the write.
-      return this.stale(err, t);
+      return this.aborted(err, t, ctx);
     }
   }
 
@@ -230,7 +229,7 @@ export class SagaEngine {
         resolution: resolved.value,
       };
     } catch (err) {
-      return { transfer: await this.stale(err, t), resolution: null };
+      return { transfer: await this.aborted(err, t, ctx), resolution: null };
     }
   }
 
@@ -248,7 +247,7 @@ export class SagaEngine {
         ctx,
       );
     } catch (err) {
-      return this.stale(err, transfer);
+      return this.aborted(err, transfer, ctx);
     }
   }
 
@@ -312,7 +311,7 @@ export class SagaEngine {
     ctx: SagaContext,
   ): Promise<Transfer> {
     const r = bankFailure(resolved, () => null, legOf(t));
-    if (r.kind === 'unknown') return this.yield(t, ctx, r);
+    if (r.kind === 'unknown') return this.yield(t, ctx, r.message);
     return this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, r, ctx);
   }
 
@@ -333,7 +332,7 @@ export class SagaEngine {
     switch (resolution) {
       case 'APPLIED': {
         const leg = await this.ledgerLeg(t, debit ? 'debit-leg' : 'credit-leg', ctx, base);
-        if (leg.kind === 'unknown') return { transfer: await this.yield(t, ctx, leg), stop: true };
+        if (leg.kind === 'unknown') return { transfer: await this.yield(t, ctx, leg.message), stop: true };
         if (leg.kind !== 'ok') {
           return { transfer: await this.fail(t, TransferState.NEEDS_MANUAL_REVIEW, leg, ctx), stop: false };
         }
@@ -360,6 +359,32 @@ export class SagaEngine {
         );
         return { transfer: invalid, stop: false };
       }
+    }
+  }
+
+  /**
+   * A drive stopped by an exception. `StaleTransferError`: another driver owns the
+   * transfer, so stop and do not retry the write. Anything else is unexpected (the
+   * database refused a write, a programming error), never a bank or ledger answer: those
+   * are classified in `call` and never thrown. Inline, it propagates to the handler, which
+   * hands the transfer to recovery. In recovery it yields (ADR-031): `attempts + 1`,
+   * backoff, lease released, state unchanged, so a write that keeps failing backs off and
+   * reaches `MAX_RECOVERY_ATTEMPTS` instead of being retried on every poll. `t` is the
+   * transfer as last written by this drive, so the yield's version guard matches. If the
+   * yield fails too, the original error propagates and the lease expires on its own.
+   */
+  private async aborted(err: unknown, t: Transfer, ctx: SagaContext): Promise<Transfer> {
+    if (err instanceof StaleTransferError) return this.stale(err, t);
+    if (ctx.mode !== 'recovery') throw err;
+    this.deps.logger.error(
+      { transfer_id: t.id, state: t.state, version: t.version, attempts: t.attempts, err },
+      'unexpected error while recovering the transfer; yielding with backoff',
+    );
+    try {
+      return await this.yield(t, ctx, `unexpected error: ${errorMessage(err)}`);
+    } catch (yieldErr) {
+      this.deps.logger.error({ transfer_id: t.id, err: yieldErr }, 'could not yield after an unexpected error');
+      throw err;
     }
   }
 
@@ -587,7 +612,7 @@ export class SagaEngine {
    * backoff(attempts)`, lease released. The state is unchanged: an unknown outcome is
    * never a failure.
    */
-  private async yield(t: Transfer, ctx: SagaContext, cause?: StepResult): Promise<Transfer> {
+  private async yield(t: Transfer, ctx: SagaContext, cause?: string): Promise<Transfer> {
     const attempts = t.attempts + 1;
     const backoffMs = this.deps.policy.recoveryBackoffMs(attempts);
     const yielded = await this.deps.store.yieldTransfer({
@@ -603,7 +628,7 @@ export class SagaEngine {
         attempts,
         backoff_ms: backoffMs,
         mode: ctx.mode,
-        ...(cause?.kind === 'unknown' ? { cause: cause.message } : {}),
+        ...(cause === undefined ? {} : { cause }),
         stale: yielded === null,
       },
       'saga yielded to recovery',

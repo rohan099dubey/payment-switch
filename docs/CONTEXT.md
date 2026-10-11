@@ -19,7 +19,7 @@ crashes mid-transfer.
 | **Active milestone** | **None: phase 2 is complete.** Phase 1 and P2-1 to P2-6 are `DONE` (P2-6 optional, built too). A Compose change must also land in `deploy/k8s` (`tests/unit/k8sManifests.test.ts` checks parity) |
 | **Definition of done** | **8 of 8 — phase 1 complete** (2026-10-07; the last box confirmed by the owner) |
 | **CI** | Private remote `origin` = `github.com/rohan099dubey/payment-switch`. Four jobs (`static`, `integration`, `k8s`, `nightly`), all green on P2-5's `8b7eceb`. The first `nightly` found a real bug, fixed in ADR-024 |
-| **Next action** | No milestone left. Open follow-ups (SESSION_LOG, 2026-10-08): the owner's call on transfer `4bad8053` stuck on the dev stack by test interference; two filed tasks (recovery backoff on unexpected transition errors; the outbox uniqueness test must not be able to commit); the P2-6 session's k8s crash-test timing fix (`claude/p2-6-k8s-crash-timing`) |
+| **Next action** | No milestone left. Open follow-ups (SESSION_LOG, 2026-10-08): the owner's call on transfer `4bad8053` stuck on the dev stack by test interference; two filed tasks (recovery backoff on unexpected transition errors: **done**, ADR-031, branch `claude/recovery-backoff-unexpected-errors`; the outbox uniqueness test must not be able to commit); the P2-6 session's k8s crash-test timing fix (`claude/p2-6-k8s-crash-timing`) |
 | **Read first for phase 2** | `ARCHITECTURE.md` section 19 (each item is independent), plus `ADR-025` for how events look on the wire |
 
 `docs/PROGRESS.md` is authoritative for status — if it disagrees with this table,
@@ -177,6 +177,7 @@ Computed against a baseline snapshot taken before each run.
 | Tracing: the OTel bootstrap is the first import in every `main.ts`; `pg` spans only inside requests; always-on sampling (its cost is a separate benchmark row: +26 % CPU per transfer); new top-level `observability/`; Jaeger's store capped at 10,000 traces (amendment 1) | `ADR-028` |
 | Balance snapshots: immutable checkpoints (`balance_snapshots`, append-only), not a running balance; the cut takes a brief `SHARE` lock on `entries` (bounded by `SNAPSHOT_LOCK_TIMEOUT_MS`); a new covering index on `entries`; invariant I11; no proto change | `ADR-029` |
 | Kubernetes (P2-6, optional): kind only, plain manifests + kustomize, one image with `SERVICE` at run time, **added** network policies (database per service enforced), two Orchestrators, a `k8s` test project and CI job. `tests/unit/k8sManifests.test.ts` fails if Compose and the manifests drift | `ADR-030` |
+| Recovery: an unexpected error (not a classified answer, not `StaleTransferError`) during a recovery drive **yields** with the section 6 backoff instead of releasing the lease for the next poll; if the yield fails too, the lease is kept and expires | `ADR-031` |
 
 PostgreSQL stays at 16. Everything else is verbatim per spec.
 

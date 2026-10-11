@@ -38,7 +38,6 @@ const CONFIG: RecoveryConfig = {
 /** Many rows, each guarded by a FakeStore (same CAS rules as the SQL), plus the claim query. */
 class MapStore implements SagaStore, RecoveryStore {
   readonly rows = new Map<string, FakeStore>();
-  readonly released: string[] = [];
   readonly lapsed = new Set<string>();
   claims = 0;
 
@@ -86,13 +85,6 @@ class MapStore implements SagaStore, RecoveryStore {
   renewLease = (id: string, leaseOwner: string): Promise<Transfer | null> => {
     const f = this.of(id);
     return Promise.resolve(!this.lapsed.has(id) && f.row.leaseOwner === leaseOwner ? f.row : null);
-  };
-  releaseLease = (id: string, leaseOwner: string): Promise<boolean> => {
-    const f = this.of(id);
-    if (f.row.leaseOwner !== leaseOwner) return Promise.resolve(false);
-    f.row = { ...f.row, leaseOwner: null };
-    this.released.push(id);
-    return Promise.resolve(true);
   };
   countInFlight = (): Promise<Map<TransferState, number>> => {
     const counts = new Map<TransferState, number>(NON_TERMINAL_STATES.map((s) => [s, 0]));
@@ -380,14 +372,25 @@ describe('RecoveryWorker.runOnce — exhaustion, leases, batching', () => {
     for (const f of h.store.rows.values()) expect(f.row.state).toBe(S.SUCCESS);
   });
 
-  it('an unexpected error on one transfer releases its lease; the rest of the batch still runs', async () => {
+  it('an unexpected error on one transfer yields it with backoff; the rest of the batch still runs', async () => {
     const h = setup([{ state: S.DEBITED }, { state: S.DEBITED }]);
     const original = h.store.casTransition;
     h.store.casTransition = (req) =>
       req.transferId === ID1 ? Promise.reject(new Error('connection terminated')) : original(req);
-    expect(await h.worker.runOnce()).toEqual(['advanced']);
-    expect(h.store.released).toEqual([ID1]);
-    expect(h.store.row(ID1).leaseOwner).toBeNull();
+    expect((await h.worker.runOnce()).sort()).toEqual(['advanced', 'yielded']);
+    expect(h.store.row(ID1)).toMatchObject({ state: S.DEBITED, attempts: 1, leaseOwner: null });
+    expect(h.store.rows.get(ID1)?.lastBackoffMs).toBe(2000);
+  });
+
+  it('if even the yield fails, the lease is kept so it expires (LEASE_MS is the backoff), never retried at once', async () => {
+    const h = setup([{ state: S.CREDITED }]);
+    h.store.casTransition = () => Promise.reject(new Error('connection terminated'));
+    h.store.yieldTransfer = () => Promise.reject(new Error('connection terminated'));
+    expect(await h.worker.runOnce()).toEqual([]);
+    expect(h.store.row(ID1).leaseOwner).not.toBeNull();
+    // Still leased, so the next poll cannot claim it.
+    expect(await h.worker.runOnce()).toEqual([]);
+    expect(h.store.claims).toBe(2);
   });
 
   it('refreshes transfers_in_flight after every run, with every non-terminal state present', async () => {
@@ -421,5 +424,49 @@ describe('RecoveryWorker loop', () => {
     await new Promise((r) => setTimeout(r, 60));
     await h.worker.stop(1000);
     expect(calls).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * The dev-stack incident of 2026-10-08: transfer 4bad8053 in CREDITED, its terminal
+ * write refused on every attempt (a planted outbox row conflicts with
+ * `outbox_one_event_per_transfer`). Before ADR-031 recovery released the lease and
+ * retried on every poll with `attempts` stuck at 0.
+ */
+describe('RecoveryWorker — a write that keeps failing backs off and escalates (ADR-031)', () => {
+  const refused = (): Error =>
+    Object.assign(new Error('duplicate key value violates unique constraint "outbox_one_event_per_transfer"'), {
+      code: '23505',
+    });
+
+  it('only the SUCCESS write fails: attempts climb with growing backoff, then RECOVERY_EXHAUSTED', async () => {
+    const h = setup([{ state: S.CREDITED }]);
+    const original = h.store.casTransition;
+    h.store.casTransition = (req) => (req.toState === S.SUCCESS ? Promise.reject(refused()) : original(req));
+    const f = h.store.first();
+    const backoffs: (number | undefined)[] = [];
+    for (let run = 1; run <= 20; run++) {
+      expect(await h.worker.runOnce()).toEqual(['yielded']);
+      expect(f.row).toMatchObject({ state: S.CREDITED, attempts: run, leaseOwner: null });
+      backoffs.push(f.lastBackoffMs);
+    }
+    expect(backoffs).toEqual(Array.from({ length: 20 }, (_, i) => 1000 * 2 ** (i + 1)));
+    expect(f.events).toEqual([]);
+
+    expect(await h.worker.runOnce()).toEqual(['exhausted']);
+    expect(f.row).toMatchObject({ state: S.NEEDS_MANUAL_REVIEW, failureCode: FailureCode.RECOVERY_EXHAUSTED });
+    expect(reasons(h)).toEqual(['NEEDS_MANUAL_REVIEW:RECOVERY_EXHAUSTED']);
+    expect(h.downstream.calls).toEqual([]);
+  });
+
+  it('every terminal write fails (the 4bad8053 case): past the limit the escalation itself keeps backing off', async () => {
+    const h = setup([{ state: S.CREDITED, attempts: 20 }]);
+    h.store.casTransition = () => Promise.reject(refused());
+    const f = h.store.first();
+    expect(await h.worker.runOnce()).toEqual(['yielded']);
+    expect(f.row).toMatchObject({ state: S.CREDITED, attempts: 21, leaseOwner: null });
+    expect(await h.worker.runOnce()).toEqual(['yielded']);
+    expect(f.row.attempts).toBe(22);
+    expect(f.events).toEqual([]);
   });
 });
