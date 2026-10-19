@@ -54,9 +54,28 @@ beforeAll(async () => {
   await runMigrations(pool, MIGRATIONS, logger);
 });
 
+/**
+ * `Pool.end()` resolves before its clients' sockets close. A forced drop that races them
+ * terminates a live backend, and that client then raises an unhandled 57P01 (CI, 2026-10-19).
+ * Wait until the server has no session left in the scratch database, then drop it unforced.
+ */
+async function waitForNoSessions(timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { rows } = await admin.query<{ n: string }>(
+      'SELECT count(*)::text AS n FROM pg_stat_activity WHERE datname = $1',
+      [SCRATCH_DB],
+    );
+    if (rows[0]?.n === '0') return;
+    if (Date.now() > deadline) throw new Error(`${SCRATCH_DB} still has ${rows[0]?.n} sessions after pool.end()`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 afterAll(async () => {
   await pool.end();
-  await admin.query(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
+  await waitForNoSessions(10_000);
+  await admin.query(`DROP DATABASE IF EXISTS ${SCRATCH_DB}`);
   await admin.end();
 });
 

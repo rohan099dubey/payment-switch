@@ -1653,3 +1653,28 @@ The transfer yielded at `DEBIT_SENT` (202), recovery finished it 35 s later, the
 the outbox gained exactly one row, the transfer's own `transfer.succeeded` (no `{}` payloads, no
 orphans). The old test would have committed its fake row at that point.
 
+
+## 2026-10-19 — Recovery-backoff test teardown race (CI)
+
+**What happened.** CI on `main` (run 39217270995) passed 224/224 integration tests but failed
+the job on one *unhandled error*: Postgres `57P01` (terminating connection due to administrator
+command) on `orch_backoff_*`, the scratch database `recoveryBackoff.test.ts` creates. The same
+code had passed the scheduled runs of 10-17 and 10-18, so it is a race, not a regression.
+
+**Cause.** `pg-pool`'s `end()` resolves as soon as its client list is empty, but `_remove` only
+*starts* `client.end()`. The teardown's `DROP DATABASE … WITH (FORCE)` could reach the server
+while a closing backend was still alive; the server killed it, and that client raised the error
+after the pool had stopped listening.
+
+**Fix.** The teardown now waits (polling `pg_stat_activity`, 10 s limit, throws on timeout) until
+the scratch database has no session, then drops it *without* `FORCE`. If a connection ever
+leaked, the test now fails by name instead of the drop hiding it.
+
+**Verified.** lint, typecheck, unit 796/796. The file 10× in a row on a throwaway Postgres
+(`cleanroom-teardown`, dev stack stopped and restored, 17 containers): 10/10 passed, no
+`orch_backoff_*` database left behind.
+
+**Also this day.** At the owner's request main's history was rewritten to drop the
+`Co-Authored-By: Claude` trailers (trees byte-identical; backup bundle in
+`PaymentSwitch_DEL_backups/2026-10-19-pre-rewrite/`), PR bodies were cleaned, and the remote
+`claude/*` branches were deleted. Commits and PRs carry no attribution lines from now on.
